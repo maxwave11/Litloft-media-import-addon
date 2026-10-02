@@ -27,11 +27,12 @@ from typing import Literal
 from app.services.ws import broadcast_from_thread
 
 from .manager import SubscriptionManager, SubscriptionNotFound, subscription_manager
+from . import db as subdb
 
 logger = logging.getLogger(__name__)
 
 
-JobKind = Literal["initial", "manual", "retry", "cron"]
+JobKind = Literal["initial", "manual", "backfill", "retry", "cron", "fetch_all"]
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,13 @@ class SubscriptionWorker:
                 or subscription_id in self._queued_ids
             ):
                 return False
+            if kind == "cron":
+                try:
+                    sub = self._manager._load_subscription(subscription_id)
+                except SubscriptionNotFound:
+                    return False
+                if sub.get("fetch_all_status") == "active":
+                    kind = "fetch_all"
             self._queued_ids.add(subscription_id)
             self._idle_event.clear()
             self._queue.put_nowait(
@@ -154,21 +162,34 @@ class SubscriptionWorker:
             )
             return
 
+        sub = await loop.run_in_executor(None, self._manager._load_subscription, job.subscription_id)
+        fetch_all = sub.get("fetch_all_status") == "active" and job.item_id is None
+        if job.kind == "fetch_all" and not fetch_all:
+            return
+        if fetch_all and (not sub.get("is_enabled") or not subdb.cron_due(sub, datetime.now(UTC))):
+            return
+
         self._broadcast(
             "media_import.subscription.sync_started",
             subscription_id=job.subscription_id,
             drive=drive,
-            kind=job.kind,
+            kind="fetch_all" if fetch_all else job.kind,
         )
 
         try:
-            result = await loop.run_in_executor(
-                None,
-                self._manager._sync_blocking,
-                job.subscription_id,
-                job.backfill,
-                job.item_id,
-            )
+            if fetch_all:
+                result = await loop.run_in_executor(None, self._manager._sync_all_blocking, job.subscription_id)
+            elif job.kind == "backfill":
+                assert job.backfill is not None
+                result = await loop.run_in_executor(
+                    None, self._manager._sync_backfill_blocking,
+                    job.subscription_id, job.backfill,
+                )
+            else:
+                result = await loop.run_in_executor(
+                    None, self._manager._sync_blocking, job.subscription_id,
+                    job.backfill, job.item_id,
+                )
         except SubscriptionNotFound:
             self._broadcast(
                 "media_import.subscription.sync_completed",
@@ -179,7 +200,10 @@ class SubscriptionWorker:
             return
         except Exception:
             logger.exception("sync_blocking failed: %s", job)
-            if job.kind == "cron":
+            if fetch_all:
+                subdb.update_fetch_all(job.subscription_id, "error")
+                self._manager._set_cooldown_until(job.subscription_id, datetime.now(UTC) + timedelta(hours=1))
+            elif job.kind == "cron":
                 self._apply_cron_backoff(job.subscription_id)
             self._broadcast(
                 "media_import.subscription.sync_completed",
@@ -205,7 +229,7 @@ class SubscriptionWorker:
     def _apply_cron_backoff(self, subscription_id: int) -> None:
         """Bump ``cooldown_until`` to the next ladder rung after a cron fail.
 
-        Manual / retry / initial paths intentionally skip this: the user
+        Manual / backfill / retry / initial paths intentionally skip this: the user
         is in front of the screen and another cron sweep would be
         confusing. Only cron updates the column so the backoff state
         machine has a single owner.

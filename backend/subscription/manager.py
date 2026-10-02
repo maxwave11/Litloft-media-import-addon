@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import app.config as config
@@ -43,6 +44,7 @@ from .registry import (
     REF_KIND_CHANNEL,
     REF_KIND_VIDEO,
     SourceMetadata,
+    TranscriptResult,
     SubscriptionProvider,
     SubscriptionRef,
     find_subscription_provider_by_url,
@@ -296,15 +298,27 @@ class SubscriptionManager:
             subscription_id, sub, provider, ref, backfill
         )
 
+    def _sync_backfill_blocking(self, subscription_id: int, count: int) -> dict:
+        sub = self._load_subscription(subscription_id)
+        provider = get_subscription_provider(sub["provider"])
+        if provider is None:
+            raise ValueError(f"Provider not registered: {sub['provider']}")
+        ref = SubscriptionRef(kind=sub["source_kind"], ref=sub["source_ref"])
+        limit = subdb.count_seen_item_ids(subscription_id) + count
+        return self._sync_diff(
+            subscription_id, sub, provider, ref, limit, new_limit=count,
+        )
+
     def _sync_diff(
-        self, subscription_id, sub, provider, ref, backfill
+        self, subscription_id, sub, provider, ref, backfill, *,
+        fetch_all=False, new_limit: int | None = None,
     ) -> dict:
         # Opportunistic backfill for installs that pre-date Phase 4:
         # the row exists with NULL avatar/display_title because the
         # create-time fetch happened before the column existed. One-shot
         # network call gated on missing data, so cron syncs of fully
         # populated subscriptions don't pay the cost.
-        if not sub.get("display_title") and not sub.get("avatar_url"):
+        if not fetch_all and not sub.get("display_title") and not sub.get("avatar_url"):
             try:
                 self._refresh_source_metadata(subscription_id, provider, ref)
             except Exception:
@@ -314,15 +328,26 @@ class SubscriptionManager:
                     subscription_id,
                 )
 
-        headers = provider.list_items(ref, limit=backfill)
+        history = fetch_all or (new_limit is not None and ref.kind == REF_KIND_CHANNEL)
+        listing = getattr(provider, "list_channel_history", provider.list_items) if history else provider.list_items
+        headers = listing(ref, limit=backfill)
         upstream_ids = [h.item_id for h in headers]
 
         seen = self._load_seen_item_ids(subscription_id)
-        new_ids = [iid for iid in upstream_ids if iid not in seen]
+        new_ids = list(dict.fromkeys(iid for iid in upstream_ids if iid not in seen))
+        pending_count = len(new_ids)
+        if fetch_all:
+            new_ids = new_ids[:15]
+        elif new_limit is not None:
+            new_ids = new_ids[:new_limit]
 
         added = reused = failed = 0
         first_seen = datetime.now(UTC).isoformat()
         for idx, item_id in enumerate(new_ids):
+            if fetch_all:
+                current = self._load_subscription(subscription_id)
+                if current["fetch_all_status"] != "active" or not current["is_enabled"]:
+                    return {"added": added, "reused": reused, "failed": failed, "total_new": len(new_ids)}
             try:
                 outcome = self._import_one_item(
                     provider=provider,
@@ -331,6 +356,7 @@ class SubscriptionManager:
                     drive=sub["drive"],
                     folder_path=sub["folder_path"],
                     include_no_transcript=bool(sub["include_no_transcript"]),
+                    fetch_all=fetch_all,
                 )
             except Exception:
                 logger.exception(
@@ -343,6 +369,8 @@ class SubscriptionManager:
                     error_kind="fetch_failed",
                 )
                 failed += 1
+                if fetch_all:
+                    raise RuntimeError("Channel fetch stopped after an item failed")
                 continue
 
             self._record_video_safe(
@@ -355,6 +383,9 @@ class SubscriptionManager:
             else:
                 added += 1
 
+            if fetch_all and outcome.transcript_error == "rate_limited":
+                raise RuntimeError("Channel fetch stopped after caption rate limiting")
+
             # Throttle only between freshly-fetched items; reused items
             # didn't hit the network.
             if (
@@ -362,7 +393,7 @@ class SubscriptionManager:
                 and idx < len(new_ids) - 1
                 and provider.inter_item_delay_seconds > 0
             ):
-                time.sleep(provider.inter_item_delay_seconds)
+                time.sleep(max(8.0, provider.inter_item_delay_seconds) if fetch_all else provider.inter_item_delay_seconds)
 
         self._touch_last_synced_at(subscription_id)
         # Successful full sync resets any pending cron backoff. Single-
@@ -370,12 +401,34 @@ class SubscriptionManager:
         # touch this column — retries are user-initiated and shouldn't
         # interfere with cron's backoff state machine.
         self._clear_cooldown_until(subscription_id)
+        if fetch_all:
+            complete = len(headers) < backfill and pending_count <= 15
+            subdb.update_fetch_all(
+                subscription_id, "completed" if complete else "active",
+                next_at=None if complete else datetime.now(UTC) + timedelta(seconds=random.uniform(120, 180)),
+                limit=backfill if pending_count > 15 else backfill + 15,
+            )
         return {
             "added": added,
             "reused": reused,
             "failed": failed,
             "total_new": len(new_ids),
         }
+
+    def _sync_all_blocking(self, subscription_id: int) -> dict:
+        sub = self._load_subscription(subscription_id)
+        if sub["fetch_all_status"] != "active" or not sub["is_enabled"]:
+            return {"added": 0, "reused": 0, "failed": 0, "total_new": 0}
+        subdb.update_fetch_all(
+            subscription_id, "active", next_at=datetime.now(UTC) + timedelta(seconds=180),
+        )
+        provider = get_subscription_provider(sub["provider"])
+        if provider is None:
+            raise ValueError(f"Provider not registered: {sub['provider']}")
+        ref = SubscriptionRef(kind=sub["source_kind"], ref=sub["source_ref"])
+        return self._sync_diff(
+            subscription_id, sub, provider, ref, sub["fetch_all_limit"], fetch_all=True,
+        )
 
     def _sync_single_item(
         self, subscription_id, sub, provider, ref, item_id
@@ -539,6 +592,7 @@ class SubscriptionManager:
         drive: str,
         folder_path: str,
         include_no_transcript: bool,
+        fetch_all: bool = False,
     ) -> "_ImportOutcome":
         existing = subdb.lookup_dedup(
             drive, folder_path, provider.name, item_id
@@ -548,7 +602,8 @@ class SubscriptionManager:
                 file_id=existing, reused=True, transcript_error=None
             )
 
-        meta = provider.fetch_item(ref, item_id)
+        item_fetch = getattr(provider, "fetch_item_strict", provider.fetch_item) if fetch_all else provider.fetch_item
+        meta = item_fetch(ref, item_id)
         drive_path = config.get_drive_path(drive)
         loft_path = _allocate_loft_path(drive_path, folder_path, meta.title)
         body = provider.build_loft_content(meta)
@@ -588,9 +643,14 @@ class SubscriptionManager:
 
         transcript_error: str | None = None
         if meta.has_captions or include_no_transcript:
-            tr = provider.fetch_transcript(
-                ref, item_id, language=meta.language
-            )
+            transcript_fetch = getattr(provider, "fetch_transcript_strict", provider.fetch_transcript) if fetch_all else provider.fetch_transcript
+            try:
+                tr = transcript_fetch(ref, item_id, language=meta.language)
+            except Exception:
+                if not fetch_all:
+                    raise
+                logger.exception("Channel caption fetch failed for %s", item_id)
+                tr = TranscriptResult(error_kind="rate_limited")
             if tr.vtt_text is not None:
                 _save_vtt(loft_path, tr.vtt_text)
                 subdb.update_caption_state(file_id, ok=True, error_kind=None)

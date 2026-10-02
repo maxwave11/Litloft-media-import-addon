@@ -586,3 +586,18 @@ class TestFetchTranscript:
             result = provider.fetch_transcript(ref, "dQw4w9WgXcQ")
         assert result.error_kind == ERROR_NO_TRANSCRIPT
         assert result.vtt_text is None
+
+
+def test_full_channel_listing_uses_uploads_instead_of_only_videos(provider):
+    ref = SubscriptionRef(kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv")
+    with patch("addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat", return_value=[{"id": "abc12345678"}]) as listing:
+        assert [item.item_id for item in provider.list_channel_history(ref, 30)] == ["abc12345678"]
+    listing.assert_called_once_with("https://www.youtube.com/playlist?list=UUabcdefghijklmnopqrstuv", 30)
+
+
+def test_strict_caption_fetch_does_not_treat_network_failure_as_absent(provider, monkeypatch):
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "download", lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("Upstream timed out")))
+    ref = SubscriptionRef(kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv")
+    with pytest.raises(TimeoutError):
+        provider.fetch_transcript_strict(ref, "abc12345678")

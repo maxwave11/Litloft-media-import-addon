@@ -128,11 +128,14 @@ def _youtube_thumbnail_fallbacks(video_id: str) -> list[str]:
     ]
 
 
-def _fetch_metadata_sync(url: str) -> dict:
+def _fetch_metadata_sync(url: str, *, strict: bool = False) -> dict:
     """Synchronously fetch full metadata via yt-dlp (no download)."""
     import yt_dlp
 
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+    options = {"quiet": True, "no_warnings": True}
+    if strict:
+        options.update(retries=0, extractor_retries=0, sleep_interval_requests=2.0, socket_timeout=30)
+    with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:
             return {}
@@ -199,6 +202,7 @@ def _classify_caption_error(message: str | None) -> str | None:
 
 def _download_captions_sync(
     url: str, output_stem: Path, language: str | None = None,
+    *, strict: bool = False,
 ) -> tuple[bool, str | None]:
     """Download captions as VTT file adjacent to the .loft file.
 
@@ -225,12 +229,17 @@ def _download_captions_sync(
         # an embedded dot for the extension.
         "outtmpl": str(parent / f"{stem_name}.%(ext)s"),
     }
+    if strict:
+        ydl_opts.update(retries=0, extractor_retries=0, sleep_interval_requests=2.0, socket_timeout=30)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     except Exception as exc:
-        return False, _classify_caption_error(str(exc))
+        error_kind = _classify_caption_error(str(exc))
+        if strict and error_kind is None:
+            raise
+        return False, error_kind
 
     candidates = sorted(parent.glob(f"{stem_name}.*.vtt"))
     if not candidates:
@@ -1236,6 +1245,9 @@ def _ensure_subscription_tables() -> None:
             )
         )
         for column_sql in (
+            "ALTER TABLE subscriptions ADD COLUMN fetch_all_status TEXT NOT NULL DEFAULT 'idle'",
+            "ALTER TABLE subscriptions ADD COLUMN fetch_all_limit INTEGER NOT NULL DEFAULT 15",
+            "ALTER TABLE subscriptions ADD COLUMN fetch_all_next_at TEXT",
             "ALTER TABLE subscriptions ADD COLUMN avatar_url TEXT",
             "ALTER TABLE subscriptions ADD COLUMN display_title TEXT",
             # The DEFAULT is the whole migration for existing installs:

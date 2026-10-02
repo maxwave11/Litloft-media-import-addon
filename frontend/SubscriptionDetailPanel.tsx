@@ -11,6 +11,8 @@ import {
   dismissSubscriptionVideo,
   extendBackfill,
   listSubscriptionVideos,
+  listSubscriptions,
+  setFetchAllChannel,
   patchSubscription,
   refreshSubscriptionMetadata,
   retrySubscriptionVideo,
@@ -70,6 +72,7 @@ export default function SubscriptionDetailPanel({
   const [backfillCount, setBackfillCount] = useState(15);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillMessage, setBackfillMessage] = useState<string | null>(null);
+  const fetchAllActive = subscription.fetch_all_status === "active";
 
   const completedEvent = useWebSocket(
     "media_import.subscription.sync_completed",
@@ -106,6 +109,26 @@ export default function SubscriptionDetailPanel({
     setEditingCooldown(initial.cooldown_minutes);
     setFolderInput(initial.folder_path);
   }, [initial]);
+
+  useEffect(() => {
+    if (!fetchAllActive) return;
+    let disposed = false;
+    const timer = setInterval(async () => {
+      try {
+        const subscriptions = await listSubscriptions(drive);
+        const updated = subscriptions.find((sub) => sub.id === initial.id);
+        if (!disposed && updated) {
+          setSubscription(updated);
+          onChanged(updated);
+          const items = await listSubscriptionVideos(drive, initial.id);
+          if (!disposed) setVideos(items);
+        }
+      } catch {
+        // Keep the last state until the next poll succeeds.
+      }
+    }, 10_000);
+    return () => { disposed = true; clearInterval(timer); };
+  }, [fetchAllActive, drive, initial.id, onChanged]);
 
   useEffect(() => {
     loadVideos();
@@ -171,6 +194,20 @@ export default function SubscriptionDetailPanel({
       setBackfillMessage(t("items.backfillFailed"));
     } finally {
       setBackfilling(false);
+    }
+  }
+
+  async function handleFetchAll() {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await setFetchAllChannel(drive, subscription.id, !fetchAllActive);
+      setSubscription(updated);
+      onChanged(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("items.backfillFailed"));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -311,7 +348,7 @@ export default function SubscriptionDetailPanel({
             <button
               type="button"
               onClick={handleSync}
-              disabled={busy || subscription.running}
+              disabled={busy || subscription.running || fetchAllActive}
               className="flex items-center gap-1 rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
               data-testid="action-sync"
             >
@@ -545,7 +582,7 @@ export default function SubscriptionDetailPanel({
             <button
               type="button"
               onClick={handleBackfill}
-              disabled={backfilling}
+              disabled={backfilling || fetchAllActive || subscription.running}
               className="rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
               data-testid="backfill-button"
             >
@@ -557,6 +594,35 @@ export default function SubscriptionDetailPanel({
               </span>
             )}
           </div>
+          {subscription.source_kind === "channel" && (
+            <div className="mt-3 space-y-2">
+              <button
+                type="button"
+                onClick={handleFetchAll}
+                disabled={busy || (!fetchAllActive && (!subscription.is_enabled || subscription.running))}
+                className="rounded-2xl bg-sand px-3 py-1.5 text-xs text-text-primary hover:bg-sand-hover disabled:opacity-50"
+                data-testid="fetch-all-button"
+              >
+                {fetchAllActive ? t("items.fetchAllStop") : t("items.fetchAll")}
+              </button>
+              <p className="text-xs text-text-muted" role="status">
+                {subscription.fetch_all_status === "active"
+                  ? t(subscription.is_enabled ? "items.fetchAllActive" : "items.fetchAllPaused")
+                  : subscription.fetch_all_status === "completed"
+                    ? t("items.fetchAllCompleted")
+                    : subscription.fetch_all_status === "error"
+                      ? t("items.fetchAllError")
+                      : subscription.fetch_all_status === "cancelled"
+                        ? t("items.fetchAllCancelled")
+                        : t("items.fetchAllHint")}
+              </p>
+              {fetchAllActive && subscription.fetch_all_next_at && (
+                <p className="text-xs text-text-muted">
+                  {t("items.fetchAllNext", { when: new Date(subscription.fetch_all_next_at).toLocaleString() })}
+                </p>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="px-5 py-4">

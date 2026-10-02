@@ -11,6 +11,7 @@ import type { Subscription, SubscriptionVideo } from "@/addons/media_import/api"
 const mockPatch = vi.fn();
 const mockListVideos = vi.fn();
 const mockExtendBackfill = vi.fn();
+const mockFetchAll = vi.fn();
 
 vi.mock("@/addons/media_import/api", async () => {
   const actual = await vi.importActual<typeof import("@/addons/media_import/api")>(
@@ -21,6 +22,7 @@ vi.mock("@/addons/media_import/api", async () => {
     patchSubscription: (...args: unknown[]) => mockPatch(...args),
     listSubscriptionVideos: (...args: unknown[]) => mockListVideos(...args),
     extendBackfill: (...args: unknown[]) => mockExtendBackfill(...args),
+    setFetchAllChannel: (...args: unknown[]) => mockFetchAll(...args),
     deleteSubscription: vi.fn(),
     syncSubscription: vi.fn(),
     refreshSubscriptionMetadata: vi.fn(),
@@ -161,5 +163,32 @@ describe("SubscriptionDetailPanel — backfill UI", () => {
     await waitFor(() =>
       expect(screen.getByTestId("backfill-message")).toBeInTheDocument(),
     );
+  });
+});
+
+
+describe("Full channel background import controls", () => {
+  it("starts from the channel detail and shows a stop control", async () => {
+    mockFetchAll.mockResolvedValue(makeSubscription({ fetch_all_status: "active" }));
+    render(<SubscriptionDetailPanel {...defaultProps} />);
+    fireEvent.click(screen.getByTestId("fetch-all-button"));
+    await waitFor(() => expect(mockFetchAll).toHaveBeenCalledWith("d", 1, true));
+    await waitFor(() => expect(screen.getByTestId("fetch-all-button")).toHaveTextContent("Stop fetching"));
+    expect(screen.getByTestId("backfill-button")).toBeDisabled();
+    expect(screen.getByTestId("action-sync")).toBeDisabled();
+  });
+
+  it("allows stopping an active task on a paused subscription", async () => {
+    mockFetchAll.mockResolvedValue(makeSubscription({ fetch_all_status: "cancelled", is_enabled: false }));
+    render(<SubscriptionDetailPanel {...defaultProps} subscription={makeSubscription({ fetch_all_status: "active", is_enabled: false })} />);
+    fireEvent.click(screen.getByTestId("fetch-all-button"));
+    await waitFor(() => expect(mockFetchAll).toHaveBeenCalledWith("d", 1, false));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Fetching stopped"));
+  });
+
+  it("offers full history only for a channel", async () => {
+    render(<SubscriptionDetailPanel {...defaultProps} subscription={makeSubscription({ source_kind: "playlist" })} />);
+    expect(screen.queryByTestId("fetch-all-button")).not.toBeInTheDocument();
+    await waitFor(() => expect(mockListVideos).toHaveBeenCalled());
   });
 });

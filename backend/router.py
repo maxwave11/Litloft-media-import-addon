@@ -21,6 +21,7 @@ On startup:
 """
 import asyncio
 import logging
+from datetime import UTC, datetime
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -315,6 +316,8 @@ def _row_to_subscription_response(
         cooldown_until=row.get("cooldown_until"),
         created_at=row["created_at"],
         running=running,
+        fetch_all_status=row.get("fetch_all_status", "idle"),
+        fetch_all_next_at=row.get("fetch_all_next_at"),
         avatar_url=row.get("avatar_url"),
         display_title=row.get("display_title"),
         display_mode=row.get("display_mode") or "library",
@@ -450,6 +453,15 @@ def _load_owned_subscription(
     return row
 
 
+def _fetch_all_error_cooldown_active(sub: dict) -> bool:
+    cooldown = subdb.parse_iso(sub.get("cooldown_until"))
+    return (
+        sub["fetch_all_status"] == "error"
+        and cooldown is not None
+        and cooldown > datetime.now(UTC)
+    )
+
+
 @router.get(
     "/subscriptions/summary", response_model=SubscriptionSummaryResponse
 )
@@ -515,7 +527,8 @@ async def patch_subscription(
     cooldown_minutes change clears ``cooldown_until`` so the cron loop
     re-evaluates eligibility against the new schedule on the next sweep
     (rather than waiting out a backoff that no longer reflects user
-    intent). is_enabled / include_no_transcript / display_title /
+    intent). A Fetch all error cooldown is retained. is_enabled /
+    include_no_transcript / display_title /
     folder_path / display_mode edits leave cooldown_until alone.
 
     ``display_mode`` is presentation only: it decides which Watch lane
@@ -550,7 +563,10 @@ async def patch_subscription(
         folder_path=folder,
         display_title=patch.display_title,
         display_mode=patch.display_mode,
-        clear_cooldown_until=patch.cooldown_minutes is not None,
+        clear_cooldown_until=(
+            patch.cooldown_minutes is not None
+            and not _fetch_all_error_cooldown_active(sub)
+        ),
     )
 
     row = _load_subscription_row(subscription_id)
@@ -654,7 +670,11 @@ async def sync_subscription(
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionEnqueueResponse:
     scoped = _scoped_drive(x_lit_drive, unlocked_groups)
-    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    sub = _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    if sub["fetch_all_status"] == "active":
+        raise HTTPException(status_code=409, detail="Stop Fetch all before a manual sync")
+    if _fetch_all_error_cooldown_active(sub):
+        raise HTTPException(status_code=409, detail="Wait until the provider cooldown ends")
     queued = await subscription_worker.enqueue_sync(
         subscription_id, kind="manual", backfill=backfill
     )
@@ -673,22 +693,60 @@ async def backfill_subscription(
     x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
     unlocked_groups: list[str] = Depends(get_unlocked_groups),
 ) -> SubscriptionEnqueueResponse:
-    """Fetch ``request.count`` more historical items for a subscription.
-
-    Computes ``limit = n_seen + count`` so that ``_sync_diff`` skips
-    already-known items and imports up to ``count`` new older ones.
-    Uses ``kind="manual"`` so cron backoff state is not disturbed.
-    """
     scoped = _scoped_drive(x_lit_drive, unlocked_groups)
-    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
-    n_seen = subdb.count_seen_item_ids(subscription_id)
+    sub = _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    if sub["fetch_all_status"] == "active":
+        raise HTTPException(status_code=409, detail="Stop Fetch all before fetching more")
+    if _fetch_all_error_cooldown_active(sub):
+        raise HTTPException(status_code=409, detail="Wait until the provider cooldown ends")
     queued = await subscription_worker.enqueue_sync(
         subscription_id,
-        kind="manual",
-        backfill=n_seen + request.count,
+        kind="backfill",
+        backfill=request.count,
     )
     return SubscriptionEnqueueResponse(
         status="queued" if queued else "already_queued"
+    )
+
+
+@router.post("/subscriptions/{subscription_id}/fetch-all", response_model=SubscriptionResponse)
+async def start_fetch_all_channel(
+    subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionResponse:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    sub = _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    if sub["source_kind"] != "channel":
+        raise HTTPException(status_code=400, detail="Fetch all requires a channel")
+    if sub["fetch_all_status"] != "active":
+        if not sub["is_enabled"]:
+            raise HTTPException(status_code=409, detail="Resume the subscription first")
+        if subscription_id in subscription_worker.running_ids or subscription_id in subscription_worker.queued_ids:
+            raise HTTPException(status_code=409, detail="A sync is already running or queued")
+        cooldown = subdb.parse_iso(sub.get("cooldown_until"))
+        if cooldown and cooldown > datetime.now(UTC):
+            raise HTTPException(status_code=409, detail="Wait until the provider cooldown ends")
+        subdb.start_fetch_all(subscription_id)
+        await subscription_worker.enqueue_sync(subscription_id, kind="fetch_all")
+    return _row_to_subscription_response(
+        _load_owned_subscription(subscription_id, scoped, unlocked_groups),
+        running=subscription_id in subscription_worker.running_ids,
+    )
+
+
+@router.delete("/subscriptions/{subscription_id}/fetch-all", response_model=SubscriptionResponse)
+async def stop_fetch_all_channel(
+    subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionResponse:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    subdb.update_fetch_all(subscription_id, "cancelled")
+    return _row_to_subscription_response(
+        _load_owned_subscription(subscription_id, scoped, unlocked_groups),
+        running=subscription_id in subscription_worker.running_ids,
     )
 
 

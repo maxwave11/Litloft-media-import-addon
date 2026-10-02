@@ -43,6 +43,7 @@ class _FakeProvider:
     name: str = "fakeyt"
     inter_item_delay_seconds: float = 0.0
     headers: list[ItemHeader] = field(default_factory=list)
+    history_headers: list[ItemHeader] | None = None
     items: dict[str, ItemMetadata] = field(default_factory=dict)
     transcripts: dict[str, TranscriptResult] = field(default_factory=dict)
     resolve_url: Callable[[str], SubscriptionRef | None] | None = None
@@ -53,6 +54,11 @@ class _FakeProvider:
     def list_items(self, ref, limit=None):
         out = list(self.headers)
         return out if limit is None else out[:limit]
+
+    def list_channel_history(self, ref, limit):
+        if self.history_headers is None:
+            return self.list_items(ref, limit)
+        return list(self.history_headers[:limit])
 
     def fetch_item(self, ref, item_id):
         return self.items.get(
@@ -449,6 +455,29 @@ class TestSyncSubscription:
 
 
 class TestBackfillSubscription:
+    def test_fetches_exact_next_missing_channel_uploads(
+        self, client, fake_provider: _FakeProvider, drive_path,
+    ) -> None:
+        from addons.media_import.subscription import db as subdb
+        from addons.media_import.subscription.manager import SubscriptionManager
+
+        seen = [ItemHeader(item_id=f"seen_{i}") for i in range(20)]
+        missing = [ItemHeader(item_id=f"new_{i}") for i in range(30)]
+        fake_provider.headers = seen
+        manager = SubscriptionManager()
+        sub_id = manager.create(url=f"https://fake/channel/{_UC}", drive="d")
+        assert manager._sync_blocking(sub_id)["added"] == 20
+        fake_provider.history_headers = missing + seen
+
+        path = f"/api/addons/media_import/subscriptions/{sub_id}/backfill"
+        assert client.post(path, json={"count": 15}).json() == {"status": "queued"}
+        _drain_worker()
+        assert len(subdb.load_seen_item_ids(sub_id)) == 35
+
+        assert client.post(path, json={"count": 15}).json() == {"status": "queued"}
+        _drain_worker()
+        assert len(subdb.load_seen_item_ids(sub_id)) == 50
+
     def test_returns_queued(
         self, client, fake_provider: _FakeProvider, drive_path
     ) -> None:
@@ -973,6 +1002,29 @@ class TestPatchSubscription:
             db.close()
         # Pause/resume must not erase the cron backoff state.
         assert value == sentinel
+
+    def test_cooldown_change_preserves_fetch_all_error_pause(
+        self, client, media_import_db
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+        from addons.media_import.subscription import db as subdb
+
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+        subdb.start_fetch_all(sub_id)
+        subdb.update_fetch_all(sub_id, "error")
+        due = datetime.now(UTC) + timedelta(hours=1)
+        subdb.set_cooldown_until(sub_id, due)
+
+        response = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"cooldown_minutes": 120},
+        )
+        assert response.status_code == 200
+        assert subdb.load_subscription(sub_id)["cooldown_until"] == due.isoformat()
 
     def test_invalid_cooldown_minutes_rejected(
         self, client
@@ -1559,3 +1611,64 @@ class TestResolveConflict:
             json={"action": "skip"},
         )
         assert res.status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["channel", "playlist"])
+def test_full_channel_actions_are_scoped_and_channel_only(client, media_import_db, kind):
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+    sid = SubscriptionManager().create(url=f"https://fake/{kind}/{_UC}", drive="d")
+    path = f"/api/addons/media_import/subscriptions/{sid}/fetch-all"
+    for method in ("POST", "DELETE"):
+        assert client.request(method, path, headers={"X-Lit-Drive": "other"}).status_code == 404
+    response = client.post(path)
+    if kind == "playlist":
+        assert response.status_code == 400
+        assert subdb.load_subscription(sid)["fetch_all_status"] == "idle"
+    else:
+        assert response.status_code == 200
+        assert response.json()["fetch_all_status"] == "active"
+        _drain_worker()
+        assert subdb.load_subscription(sid)["fetch_all_status"] == "completed"
+        assert client.delete(path).status_code == 200
+
+
+@pytest.mark.parametrize("constraint", ["paused", "cooldown", "active"])
+def test_full_channel_cannot_bypass_task_pacing(client, media_import_db, constraint):
+    from datetime import UTC, datetime, timedelta
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+    sid = SubscriptionManager().create(url=f"https://fake/channel/{_UC}", drive="d")
+    due = datetime.now(UTC) + timedelta(minutes=5)
+    if constraint == "paused":
+        subdb.update_settings(sid, is_enabled=False)
+    elif constraint == "cooldown":
+        subdb.set_cooldown_until(sid, due)
+    else:
+        subdb.start_fetch_all(sid)
+        subdb.update_fetch_all(sid, "active", next_at=due)
+    path = f"/api/addons/media_import/subscriptions/{sid}"
+    response = client.post(path + "/fetch-all")
+    assert response.status_code == (200 if constraint == "active" else 409)
+    if constraint == "active":
+        assert response.json()["fetch_all_next_at"] == due.isoformat()
+        assert client.post(path + "/sync").status_code == 409
+        assert client.post(path + "/backfill", json={}).status_code == 409
+        response = client.delete(path + "/fetch-all")
+        assert response.status_code == 200
+        assert response.json()["fetch_all_status"] == "cancelled"
+
+
+@pytest.mark.parametrize("action", ["sync", "backfill"])
+def test_fetch_all_error_pause_blocks_manual_discovery(client, media_import_db, action):
+    from datetime import UTC, datetime, timedelta
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    sid = SubscriptionManager().create(url=f"https://fake/channel/{_UC}", drive="d")
+    subdb.start_fetch_all(sid)
+    subdb.update_fetch_all(sid, "error")
+    subdb.set_cooldown_until(sid, datetime.now(UTC) + timedelta(hours=1))
+    path = f"/api/addons/media_import/subscriptions/{sid}/{action}"
+    response = client.post(path, json={"count": 15} if action == "backfill" else None)
+    assert response.status_code == 409

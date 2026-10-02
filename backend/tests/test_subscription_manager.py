@@ -1294,3 +1294,157 @@ class TestRefreshUnknownSubscription:
         mgr = SubscriptionManager()
         with pytest.raises(SubscriptionNotFound):
             mgr.refresh_source_metadata(99999)
+
+
+@pytest.mark.parametrize("size", [0, 14, 15, 31])
+def test_full_channel_import_is_bounded_and_finishes(media_import_db, drive_path, fake_provider, size):
+    from datetime import UTC, datetime, timedelta
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    fake_provider.headers = [ItemHeader(item_id=f"video{i}") for i in range(size)]
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+    subdb.start_fetch_all(sid)
+    previous = 0
+    for _ in range(5):
+        before = datetime.now(UTC)
+        result = manager._sync_all_blocking(sid)
+        count = subdb.count_seen_item_ids(sid)
+        assert count - previous <= 15
+        assert result["added"] <= 15
+        state = subdb.load_subscription(sid)
+        if state["fetch_all_status"] == "completed":
+            assert count == size
+            break
+        due = subdb.parse_iso(state["fetch_all_next_at"])
+        assert before + timedelta(seconds=120) <= due <= datetime.now(UTC) + timedelta(seconds=180)
+        assert not subdb.cron_due(state, before)
+        assert subdb.cron_due(state, due)
+        subdb.start_fetch_all(sid)
+        assert subdb.load_subscription(sid) == state
+        previous = count
+    else:
+        pytest.fail("Full channel task did not finish")
+
+
+def test_stopped_full_channel_cannot_be_reactivated_by_batch(media_import_db, drive_path, fake_provider, monkeypatch):
+    from datetime import UTC, datetime
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    fake_provider.headers = [ItemHeader(item_id=f"video{i}") for i in range(20)]
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+    subdb.start_fetch_all(sid)
+    fetch = fake_provider.fetch_item
+    def stop_on_first(ref, item_id):
+        subdb.update_fetch_all(sid, "cancelled")
+        return fetch(ref, item_id)
+    monkeypatch.setattr(fake_provider, "fetch_item", stop_on_first)
+    manager._sync_all_blocking(sid)
+    assert subdb.count_seen_item_ids(sid) == 1
+    subdb.update_fetch_all(sid, "active", next_at=datetime.now(UTC))
+    assert subdb.load_subscription(sid)["fetch_all_status"] == "cancelled"
+
+
+@pytest.mark.parametrize("failure", ["listing", "item", "captions", "caption_network"])
+def test_full_channel_errors_stop_and_keep_imports(media_import_db, drive_path, fake_provider, monkeypatch, failure):
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+    from addons.media_import.subscription.worker import SubscriptionWorker, SyncJob
+
+    fake_provider.headers = [ItemHeader(item_id=f"video{i}") for i in range(3)]
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+    subdb.start_fetch_all(sid)
+    if failure == "listing":
+        def fail_listing(*args, **kwargs):
+            raise RuntimeError("Upstream unavailable")
+        monkeypatch.setattr(fake_provider, "list_items", fail_listing)
+    elif failure == "item":
+        fetch = fake_provider.fetch_item
+        def fail_item(ref, item_id):
+            if item_id == "video1":
+                raise RuntimeError("Upstream unavailable")
+            return fetch(ref, item_id)
+        monkeypatch.setattr(fake_provider, "fetch_item", fail_item)
+    else:
+        fake_provider.items["video0"] = ItemMetadata(item_id="video0", canonical_url="https://fake/video0", title="Video", has_captions=True)
+        fake_provider.transcripts["video0"] = TranscriptResult(error_kind=ERROR_RATE_LIMITED)
+        if failure == "caption_network":
+            def fail_caption(*args, **kwargs):
+                raise TimeoutError("Upstream timed out")
+            monkeypatch.setattr(fake_provider, "fetch_transcript", fail_caption)
+    worker = SubscriptionWorker(manager)
+    before = datetime.now(UTC)
+    asyncio.run(worker._execute(SyncJob(sid, "fetch_all")))
+    state = subdb.load_subscription(sid)
+    assert state["fetch_all_status"] == "error"
+    assert subdb.parse_iso(state["cooldown_until"]) >= before + timedelta(hours=1)
+    assert not subdb.cron_due(state, before)
+    assert subdb.count_seen_item_ids(sid) == {"listing": 0, "item": 2, "captions": 1, "caption_network": 1}[failure]
+    assert len(subdb.load_seen_item_ids(sid)) < 3
+
+
+def test_full_channel_worker_respects_persisted_wait_and_pause(media_import_db, drive_path, fake_provider, monkeypatch):
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+    from addons.media_import.subscription.worker import SubscriptionWorker, SyncJob
+
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+    subdb.start_fetch_all(sid)
+    calls = []
+    monkeypatch.setattr(fake_provider, "list_items", lambda *a, **kw: calls.append(kw) or [])
+    due = datetime.now(UTC) + timedelta(minutes=2)
+    subdb.update_fetch_all(sid, "active", next_at=due)
+    asyncio.run(SubscriptionWorker(manager)._execute(SyncJob(sid, "cron")))
+    assert calls == []
+    subdb.update_fetch_all(sid, "active", next_at=datetime.now(UTC))
+    subdb.update_settings(sid, is_enabled=False)
+    asyncio.run(SubscriptionWorker(manager)._execute(SyncJob(sid, "fetch_all")))
+    assert calls == []
+
+
+def test_full_channel_bounds_new_uploads_between_batches(media_import_db, drive_path, fake_provider):
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    fake_provider.headers = [ItemHeader(item_id=f"old{i}") for i in range(40)]
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+    subdb.start_fetch_all(sid)
+    manager._sync_all_blocking(sid)
+    fake_provider.headers = [ItemHeader(item_id=f"new{i}") for i in range(40)] + fake_provider.headers
+    result = manager._sync_all_blocking(sid)
+    assert result["added"] == 15
+    assert subdb.count_seen_item_ids(sid) == 30
+    assert subdb.load_subscription(sid)["fetch_all_limit"] == 30
+
+
+def test_cancelled_scheduled_task_does_not_turn_into_a_normal_sync(media_import_db, drive_path, fake_provider, monkeypatch):
+    import asyncio
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+    from addons.media_import.subscription.worker import SubscriptionWorker
+
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+    subdb.start_fetch_all(sid)
+    calls = []
+    monkeypatch.setattr(fake_provider, "list_items", lambda *a, **kw: calls.append(kw) or [])
+    async def scenario():
+        worker = SubscriptionWorker(manager)
+        assert await worker.enqueue_sync(sid, kind="cron")
+        subdb.update_fetch_all(sid, "cancelled")
+        await worker.start()
+        await worker.wait_idle(timeout=2)
+        await worker.stop()
+    asyncio.run(scenario())
+    assert calls == []
+    assert subdb.load_subscription(sid)["fetch_all_status"] == "cancelled"
