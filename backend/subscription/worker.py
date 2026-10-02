@@ -201,8 +201,9 @@ class SubscriptionWorker:
         except Exception:
             logger.exception("sync_blocking failed: %s", job)
             if fetch_all:
-                subdb.update_fetch_all(job.subscription_id, "error")
-                self._manager._set_cooldown_until(job.subscription_id, datetime.now(UTC) + timedelta(hours=1))
+                cooldown_until = datetime.now(UTC) + timedelta(hours=1)
+                subdb.update_fetch_all(job.subscription_id, "error", next_at=cooldown_until)
+                self._manager._set_cooldown_until(job.subscription_id, cooldown_until)
             elif job.kind == "cron":
                 self._apply_cron_backoff(job.subscription_id)
             self._broadcast(

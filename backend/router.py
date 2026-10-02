@@ -457,7 +457,7 @@ def _load_owned_subscription(
 
 
 def _fetch_all_error_cooldown_active(sub: dict) -> bool:
-    cooldown = subdb.parse_iso(sub.get("cooldown_until"))
+    cooldown = subdb.parse_iso(sub.get("fetch_all_next_at"))
     return (
         sub["fetch_all_status"] == "error"
         and cooldown is not None

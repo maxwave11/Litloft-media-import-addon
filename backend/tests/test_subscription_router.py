@@ -1014,9 +1014,9 @@ class TestPatchSubscription:
             json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
         )
         sub_id = create.json()["id"]
-        subdb.start_fetch_all(sub_id)
-        subdb.update_fetch_all(sub_id, "error")
         due = datetime.now(UTC) + timedelta(hours=1)
+        subdb.start_fetch_all(sub_id)
+        subdb.update_fetch_all(sub_id, "error", next_at=due)
         subdb.set_cooldown_until(sub_id, due)
 
         response = client.patch(
@@ -1666,9 +1666,57 @@ def test_fetch_all_error_pause_blocks_manual_discovery(client, media_import_db, 
     from addons.media_import.subscription.manager import SubscriptionManager
 
     sid = SubscriptionManager().create(url=f"https://fake/channel/{_UC}", drive="d")
+    due = datetime.now(UTC) + timedelta(hours=1)
     subdb.start_fetch_all(sid)
-    subdb.update_fetch_all(sid, "error")
-    subdb.set_cooldown_until(sid, datetime.now(UTC) + timedelta(hours=1))
+    subdb.update_fetch_all(sid, "error", next_at=due)
+    subdb.set_cooldown_until(sid, due)
     path = f"/api/addons/media_import/subscriptions/{sid}/{action}"
     response = client.post(path, json={"count": 15} if action == "backfill" else None)
     assert response.status_code == 409
+
+
+@pytest.mark.parametrize("action", ["sync", "backfill"])
+def test_expired_fetch_all_error_does_not_block_manual_discovery(
+    client, media_import_db, action
+):
+    from datetime import UTC, datetime, timedelta
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    sid = SubscriptionManager().create(url=f"https://fake/channel/{_UC}", drive="d")
+    subdb.start_fetch_all(sid)
+    subdb.update_fetch_all(sid, "error", next_at=datetime.now(UTC) - timedelta(minutes=1))
+    due = datetime.now(UTC) + timedelta(hours=1)
+    subdb.set_cooldown_until(sid, due)
+    path = f"/api/addons/media_import/subscriptions/{sid}"
+
+    response = client.patch(path, json={"cooldown_minutes": 120})
+    assert response.status_code == 200
+    assert subdb.load_subscription(sid)["cooldown_until"] is None
+
+    subdb.set_cooldown_until(sid, due)
+    response = client.post(
+        path + f"/{action}", json={"count": 15} if action == "backfill" else None
+    )
+    assert response.status_code == 200
+    _drain_worker()
+
+
+def test_fetch_all_failure_records_its_pause_end(client, media_import_db, fake_provider):
+    from datetime import UTC, datetime
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    def unavailable(ref, limit):
+        raise RuntimeError("provider unavailable")
+
+    fake_provider.list_channel_history = unavailable
+    sid = SubscriptionManager().create(url=f"https://fake/channel/{_UC}", drive="d")
+    response = client.post(f"/api/addons/media_import/subscriptions/{sid}/fetch-all")
+    assert response.status_code == 200
+    _drain_worker()
+
+    row = subdb.load_subscription(sid)
+    assert row["fetch_all_status"] == "error"
+    assert row["fetch_all_next_at"] == row["cooldown_until"]
+    assert subdb.parse_iso(row["fetch_all_next_at"]) > datetime.now(UTC)
