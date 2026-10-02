@@ -136,6 +136,9 @@ def _yt_dlp_extract_flat(url: str, limit: int | None) -> list[dict]:
         "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
+        "sleep_interval_requests": 2.0,
+        "retries": 1,
+        "extractor_retries": 1,
     }
     if limit is not None:
         opts["playlistend"] = limit
@@ -202,19 +205,21 @@ def _pick_avatar_url(thumbnails: list[dict] | None) -> str | None:
     return candidates[0]["url"]
 
 
-def _fetch_metadata_sync_for_provider(url: str) -> dict:
+def _fetch_metadata_sync_for_provider(url: str, *, strict: bool = False) -> dict:
     """Indirection so tests can patch metadata fetch at the provider module."""
     from ...service import _fetch_metadata_sync
 
-    return _fetch_metadata_sync(url)
+    return _fetch_metadata_sync(url, strict=True) if strict else _fetch_metadata_sync(url)
 
 
 def _download_captions_sync_for_provider(
-    url: str, output_stem: Path, language: str | None = None
+    url: str, output_stem: Path, language: str | None = None, *, strict: bool = False,
 ) -> tuple[bool, str | None]:
     """Indirection so tests can patch caption download at the provider module."""
     from ...service import _download_captions_sync
 
+    if strict:
+        return _download_captions_sync(url, output_stem, language=language, strict=True)
     return _download_captions_sync(url, output_stem, language=language)
 
 
@@ -393,6 +398,12 @@ class YouTubeProvider:
 
         raise ValueError(f"unsupported ref kind: {ref.kind!r}")
 
+    def list_channel_history(self, ref: SubscriptionRef, limit: int) -> list[ItemHeader]:
+        if ref.kind != REF_KIND_CHANNEL or not _CHANNEL_ID_RE.match(ref.ref):
+            raise ValueError("Channel history requires a canonical channel id")
+        uploads_id = "UU" + ref.ref[2:]
+        return self._yt_dlp_headers(f"https://www.youtube.com/playlist?list={uploads_id}", limit)
+
     def _list_channel_via_rss(
         self, channel_id: str, limit: int | None
     ) -> list[ItemHeader] | None:
@@ -459,7 +470,7 @@ class YouTubeProvider:
         ]
 
     def fetch_item(
-        self, ref: SubscriptionRef, item_id: str
+        self, ref: SubscriptionRef, item_id: str, *, strict: bool = False,
     ) -> ItemMetadata:
         # ``item_id`` reaches us from RSS / yt-dlp / the retry endpoint
         # path param. The first two are trusted upstream but never
@@ -470,7 +481,9 @@ class YouTubeProvider:
         if not _VIDEO_ID_RE.match(item_id):
             raise ValueError(f"invalid YouTube item_id: {item_id!r}")
         canonical_url = f"https://www.youtube.com/watch?v={item_id}"
-        meta = _fetch_metadata_sync_for_provider(canonical_url)
+        meta = _fetch_metadata_sync_for_provider(canonical_url, strict=True) if strict else _fetch_metadata_sync_for_provider(canonical_url)
+        if strict and not meta:
+            raise RuntimeError("Channel video metadata is unavailable")
         return ItemMetadata(
             item_id=item_id,
             canonical_url=canonical_url,
@@ -488,11 +501,15 @@ class YouTubeProvider:
             chapters=meta.get("chapters"),
         )
 
+    def fetch_item_strict(self, ref: SubscriptionRef, item_id: str) -> ItemMetadata:
+        return self.fetch_item(ref, item_id, strict=True)
+
     def fetch_transcript(
         self,
         ref: SubscriptionRef,
         item_id: str,
         language: str | None = None,
+        *, strict: bool = False,
     ) -> TranscriptResult:
         if not _VIDEO_ID_RE.match(item_id):
             raise ValueError(f"invalid YouTube item_id: {item_id!r}")
@@ -500,9 +517,8 @@ class YouTubeProvider:
         lang = language or "ja"
         with tempfile.TemporaryDirectory(prefix="ytsub_") as td:
             stem = Path(td) / item_id
-            ok, error_kind = _download_captions_sync_for_provider(
-                canonical_url, stem, language=lang
-            )
+            options = {"strict": True} if strict else {}
+            ok, error_kind = _download_captions_sync_for_provider(canonical_url, stem, language=lang, **options)
             if ok:
                 vtt_path = stem.parent / f"{stem.name}.vtt"
                 try:
@@ -521,3 +537,8 @@ class YouTubeProvider:
                 # SubscriptionManager can keep the .loft and not retry.
                 return TranscriptResult(error_kind=ERROR_NO_TRANSCRIPT)
             return TranscriptResult(error_kind=error_kind)
+
+    def fetch_transcript_strict(
+        self, ref: SubscriptionRef, item_id: str, language: str | None = None,
+    ) -> TranscriptResult:
+        return self.fetch_transcript(ref, item_id, language=language, strict=True)

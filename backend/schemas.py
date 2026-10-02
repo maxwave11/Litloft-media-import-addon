@@ -80,6 +80,8 @@ class SubscriptionResponse(BaseModel):
     last_synced_at: str | None = None
     cooldown_until: str | None = None
     created_at: str
+    fetch_all_status: Literal["idle", "active", "completed", "cancelled", "error"] = "idle"
+    fetch_all_next_at: str | None = None
     running: bool = False  # derived from SubscriptionWorker.running_ids
     # Phase 4 additions; nullable so existing rows that haven't yet
     # backfilled metadata don't crash response serialisation.
@@ -153,14 +155,6 @@ class SubscriptionVideoResponse(BaseModel):
 
 
 class SubscriptionBackfillRequest(BaseModel):
-    """Body for POST /subscriptions/{id}/backfill.
-
-    ``count`` is the number of *additional* upstream items to fetch
-    beyond what is already known. The endpoint adds this to the current
-    seen-item count so that ``provider.list_items(limit=n_seen+count)``
-    naturally skips already-imported items via the seen-set diff.
-    """
-
     count: int = Field(15, ge=1, le=200)
 
 

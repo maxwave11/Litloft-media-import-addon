@@ -177,7 +177,16 @@
         "backfill": "さらに取り込む",
         "backfilling": "キュー追加中...",
         "backfillQueued": "キューに追加しました",
-        "backfillFailed": "取り込みの開始に失敗しました"
+        "backfillFailed": "取り込みの開始に失敗しました",
+        "fetchAll": "チャンネルをすべて取得",
+        "fetchAllStop": "取得を停止",
+        "fetchAllHint": "15件ずつ、2〜3分間隔で履歴を取り込みます。ページを閉じても続行します。",
+        "fetchAllActive": "チャンネル履歴をバックグラウンドで取得中…",
+        "fetchAllPaused": "一時停止中。購読を再開すると取得を続行します。",
+        "fetchAllCompleted": "チャンネル履歴の取得が完了しました。",
+        "fetchAllError": "取得エラーまたはリクエスト制限により停止しました。取得済みの項目は保持されます。待機後に再試行してください。",
+        "fetchAllCancelled": "取得を停止しました。取得済みの項目は保持されます。",
+        "fetchAllNext": "次の取得は {when} 以降です。"
       },
       "danger": {
         "heading": "危険な操作",

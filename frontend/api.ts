@@ -129,6 +129,8 @@ export interface Subscription {
   include_no_transcript: boolean;
   last_synced_at: string | null;
   cooldown_until: string | null;
+  fetch_all_status?: "idle" | "active" | "completed" | "cancelled" | "error";
+  fetch_all_next_at?: string | null;
   created_at: string;
   // Derived from SubscriptionWorker.running_ids on the server. True
   // while a sync job for this subscription is currently executing.
@@ -310,6 +312,17 @@ export async function extendBackfill(
     body: JSON.stringify({ count }),
   });
   return _json<SubscriptionEnqueueResult>(res);
+}
+
+export async function setFetchAllChannel(
+  drive: string, id: number, enabled: boolean,
+): Promise<Subscription> {
+  const res = await fetch(`${BASE}/subscriptions/${id}/fetch-all`, {
+    method: enabled ? "POST" : "DELETE",
+    credentials: "include",
+    headers: driveHeaders(drive),
+  });
+  return _json<Subscription>(res);
 }
 
 export async function listSubscriptionVideos(

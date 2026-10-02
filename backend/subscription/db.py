@@ -53,6 +53,9 @@ def cron_due(row: dict, now: datetime) -> bool:
     cooldown_until = parse_iso(row.get("cooldown_until"))
     if cooldown_until is not None and cooldown_until > now:
         return False
+    if row.get("fetch_all_status") == "active":
+        next_at = parse_iso(row.get("fetch_all_next_at"))
+        return next_at is None or next_at <= now
     last_synced_at = parse_iso(row.get("last_synced_at"))
     if last_synced_at is None:
         return True
@@ -573,7 +576,8 @@ def load_subscription(subscription_id: int) -> dict | None:
             text(
                 "SELECT provider, source_kind, source_ref, drive, "
                 " folder_path, include_no_transcript, avatar_url, "
-                " display_title "
+                " display_title, is_enabled, cooldown_until, fetch_all_status, "
+                " fetch_all_limit, fetch_all_next_at "
                 "FROM subscriptions WHERE id = :id"
             ),
             {"id": subscription_id},
@@ -581,6 +585,40 @@ def load_subscription(subscription_id: int) -> dict | None:
     finally:
         db.close()
     return dict(row) if row else None
+
+
+def start_fetch_all(subscription_id: int) -> None:
+    db = SessionLocal()
+    try:
+        db.execute(text(
+            "UPDATE subscriptions SET fetch_all_status = 'active', "
+            "fetch_all_next_at = :now, fetch_all_limit = "
+            "(SELECT COUNT(*) FROM subscription_videos WHERE subscription_id = :id) + 15 "
+            "WHERE id = :id AND fetch_all_status <> 'active'"
+        ), {"id": subscription_id, "now": datetime.now(UTC).isoformat()})
+        db.commit()
+    finally:
+        db.close()
+
+
+def update_fetch_all(
+    subscription_id: int, status: str, *, next_at: datetime | None = None,
+    limit: int | None = None,
+) -> None:
+    db = SessionLocal()
+    try:
+        db.execute(text(
+            "UPDATE subscriptions SET fetch_all_status = :status, "
+            "fetch_all_next_at = :next, "
+            "fetch_all_limit = COALESCE(:limit, fetch_all_limit) "
+            "WHERE id = :id AND fetch_all_status = 'active'"
+        ), {
+            "id": subscription_id, "status": status, "limit": limit,
+            "next": next_at.isoformat() if next_at else None,
+        })
+        db.commit()
+    finally:
+        db.close()
 
 
 def load_eligible_cron_rows(
@@ -599,7 +637,7 @@ def load_eligible_cron_rows(
         rows = db.execute(
             text(
                 "SELECT id, cooldown_minutes, last_synced_at, "
-                " cooldown_until "
+                " cooldown_until, fetch_all_status, fetch_all_next_at "
                 "FROM subscriptions "
                 "WHERE is_enabled = 1 "
                 "ORDER BY last_synced_at IS NOT NULL, last_synced_at, id"

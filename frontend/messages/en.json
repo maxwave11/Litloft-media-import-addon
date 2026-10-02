@@ -177,7 +177,16 @@
         "backfill": "Fetch more",
         "backfilling": "Queuing...",
         "backfillQueued": "Queued",
-        "backfillFailed": "Failed to queue"
+        "backfillFailed": "Failed to queue",
+        "fetchAll": "Fetch all channel",
+        "fetchAllStop": "Stop fetching",
+        "fetchAllHint": "Imports channel history in batches of 15 with 2–3 minute pauses. Continues after closing this page.",
+        "fetchAllActive": "Fetching channel history in the background…",
+        "fetchAllPaused": "Paused. Resume the subscription to continue.",
+        "fetchAllCompleted": "Channel history fetched.",
+        "fetchAllError": "Stopped after an upstream error or rate limit. Imported items are kept. Retry after the cooldown.",
+        "fetchAllCancelled": "Fetching stopped. Imported items are kept.",
+        "fetchAllNext": "Next batch after {when}"
       },
       "danger": {
         "heading": "Danger zone",
