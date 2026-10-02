@@ -87,6 +87,7 @@
       "justImportedHeading": "Just imported"
     },
     "loftMetadata": {
+      "openOriginal": "Open original",
       "refresh": "Refresh metadata",
       "refreshStarted": "Refreshing metadata",
       "refreshFailed": "Failed to refresh metadata",

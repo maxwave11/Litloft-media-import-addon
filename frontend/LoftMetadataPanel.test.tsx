@@ -22,7 +22,9 @@ import { notifyLoftRefreshed } from "@/addons/media_import/loftRefresh";
 
 const messages = {
   mediaImport: {
+    player: { watchOnYouTube: "Watch on YouTube" },
     loftMetadata: {
+      openOriginal: "Open original",
       generateStt: "Generate captions with speech-to-text",
       refreshFailed: "Failed to refresh metadata",
       showMore: "Show more",
@@ -373,4 +375,38 @@ describe("LoftMetadataPanel", () => {
       expect(screen.getByText(/Line one/)).toHaveClass("line-clamp-3", "select-none");
     });
   });
+});
+
+describe("LoftMetadataPanel original link", () => {
+  async function renderLoaded(metadata: LoftMetadata) {
+    getLoftMetadata.mockResolvedValue(metadata);
+    renderPanel();
+    await screen.findByText("Channel");
+  }
+
+  it("links a YouTube loft to the original video in a new tab", async () => {
+    await renderLoaded(makeMetadata());
+    const link = screen.getByTestId("loft-open-original");
+    expect(link).toHaveAttribute("href", "https://www.youtube.com/watch?v=abc");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link).toHaveTextContent("Watch on YouTube");
+  });
+
+  it("uses a neutral label for other providers", async () => {
+    await renderLoaded(
+      makeMetadata({ provider: "vimeo", url: "https://vimeo.com/123" }),
+    );
+    expect(screen.getByTestId("loft-open-original")).toHaveTextContent(
+      "Open original",
+    );
+  });
+
+  it.each(["javascript:alert(1)", "not a url", "data:text/html,x"])(
+    "renders no link for the non-web url %s",
+    async (url) => {
+      await renderLoaded(makeMetadata({ url }));
+      expect(screen.queryByTestId("loft-open-original")).toBeNull();
+    },
+  );
 });

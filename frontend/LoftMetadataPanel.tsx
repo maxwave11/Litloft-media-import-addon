@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Captions } from "lucide-react";
+import { Captions, ExternalLink } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { useToast } from "@/components/ToastProvider";
@@ -16,6 +16,17 @@ import {
 import CaptionStatusBadge from "./CaptionStatusBadge";
 import LoftDescription from "./LoftDescription";
 import { useLoftRefreshed } from "./loftRefresh";
+
+// The URL comes from a user-editable .loft file, so only a web link may
+// become an href (a `javascript:` URL would run on click).
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
 
 /** After intelligence's generators in the "AI" menu. */
 const TRANSCRIBE_ORDER = 100;
@@ -35,6 +46,7 @@ export default function LoftMetadataPanel({
   drive: string;
 }) {
   const t = useTranslations("mediaImport.loftMetadata");
+  const tp = useTranslations("mediaImport.player");
   const toast = useToast();
   const [metadata, setMetadata] = useState<LoftMetadata | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -99,6 +111,22 @@ export default function LoftMetadataPanel({
           </span>
         )}
         {metadata.published_at && <span> · {metadata.published_at}</span>}
+        {isWebUrl(metadata.url) && (
+          <div className="mt-1">
+            <a
+              href={metadata.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-accent-cta hover:underline"
+              data-testid="loft-open-original"
+            >
+              <ExternalLink size={12} aria-hidden="true" />
+              {metadata.provider === "youtube"
+                ? tp("watchOnYouTube")
+                : t("openOriginal")}
+            </a>
+          </div>
+        )}
         {metadata.description && (
           <LoftDescription key={fileId} text={metadata.description} />
         )}
