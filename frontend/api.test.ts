@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getLoftMetadata, refreshLoft } from "@/addons/media_import/api";
+import { createLoft, getLoftMetadata, refreshLoft } from "@/addons/media_import/api";
 
 const fetchSpy = vi.fn(
   async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -46,5 +46,18 @@ describe("refreshLoft", () => {
     fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 404 }));
 
     await expect(refreshLoft("f1", "d")).rejects.toThrow();
+  });
+});
+
+describe("createLoft error message", () => {
+  it.each([
+    ["JSON detail", new Response('{"detail":"Failed to create link"}', { status: 500, statusText: "Internal Server Error" }), "HTTP 500 Internal Server Error: Failed to create link"],
+    ["validation list", new Response('{"detail":[{"loc":["body","drive"]}]}', { status: 422 }), 'HTTP 422: [{"loc":["body","drive"]}]'],
+    ["plain-text body", new Response("Internal Server Error", { status: 500 }), "HTTP 500: Internal Server Error"],
+    ["empty body", new Response("", { status: 502 }), "HTTP 502"],
+  ])("keeps the status and body for %s", async (_name, res, message) => {
+    fetchSpy.mockResolvedValueOnce(res);
+
+    await expect(createLoft("https://example.com/v", "d", "")).rejects.toThrow(message);
   });
 });

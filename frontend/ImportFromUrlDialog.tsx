@@ -165,7 +165,10 @@ export default function ImportFromUrlDialog({ drive, path, onCancel, onImported 
           )}
 
           {error && (
-            <div role="alert" className="rounded-2xl bg-danger/10 px-3 py-2 text-sm text-danger">
+            <div
+              role="alert"
+              className="select-text whitespace-pre-wrap break-words rounded-2xl bg-danger/10 px-3 py-2 text-sm text-danger"
+            >
               {error}
             </div>
           )}

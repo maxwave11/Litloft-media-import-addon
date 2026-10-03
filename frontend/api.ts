@@ -7,6 +7,22 @@ function driveHeaders(drive: string): Record<string, string> {
   return { "X-Lit-Drive": encodeURIComponent(drive) };
 }
 
+// The text is meant to be copied into a bug report, so it keeps the status
+// and whatever body came back instead of collapsing a non-JSON 500 (the
+// proxy's "Internal Server Error") to a bare status code.
+async function errorMessage(res: Response): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  let detail = raw.trim();
+  try {
+    const data = JSON.parse(raw);
+    if (data?.detail !== undefined) {
+      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+    }
+  } catch {}
+  const head = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
+  return detail ? `${head}: ${detail.slice(0, 1000)}` : head;
+}
+
 export interface LoftCreateResponse {
   file_id: string;
   filename: string;
@@ -42,10 +58,7 @@ export async function createLoft(
     headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
     body: JSON.stringify({ url, drive, folder_path, stt_mode }),
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.detail ?? `Error: ${res.status}`);
-  }
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.json();
 }
 
@@ -209,10 +222,7 @@ export interface SubscriptionEnqueueResult {
 }
 
 async function _json<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.detail ?? `Error: ${res.status}`);
-  }
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.json();
 }
 
