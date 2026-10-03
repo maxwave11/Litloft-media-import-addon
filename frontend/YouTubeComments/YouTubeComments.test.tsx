@@ -288,6 +288,32 @@ describe("loading", () => {
     expect(screen.queryByText("text first")).not.toBeInTheDocument();
   });
 
+  it("does not show the previous file's comments on a file whose first read gets no answer", async () => {
+    const { rerender } = await renderLoaded(payload());
+    expect(screen.getByText("text a")).toBeInTheDocument();
+
+    getLoftComments.mockResolvedValue(null);
+    rerender(ui({ fileId: "f2" }));
+    await act(async () => {});
+
+    expect(screen.queryByText("text a")).not.toBeInTheDocument();
+  });
+
+  it("folds the list again for another file", async () => {
+    const many = (prefix: string) =>
+      Array.from({ length: 25 }, (_, i) => comment(`${prefix}${i}`));
+    const { rerender } = await renderLoaded(payload({ comments: many("a") }));
+    fireEvent.click(screen.getByRole("button", { name: "Show all 25" }));
+    expect(screen.getAllByTestId("comment-root")).toHaveLength(25);
+
+    getLoftComments.mockResolvedValue(payload({ comments: many("b") }));
+    rerender(ui({ fileId: "f2" }));
+    await act(async () => {});
+
+    expect(screen.getAllByTestId("comment-root")).toHaveLength(20);
+    expect(screen.getByRole("button", { name: "Show all 25" })).toBeInTheDocument();
+  });
+
   it("starts over for another file", async () => {
     const { rerender } = await renderLoaded(payload());
     getLoftComments.mockResolvedValue(payload({ comments: [comment("other-file")] }));
