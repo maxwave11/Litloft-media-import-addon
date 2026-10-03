@@ -130,6 +130,21 @@ def _fetch_returns(monkeypatch, result: CommentsResult) -> list[dict]:
     return calls
 
 
+def _fail_inserting(session, message: str) -> None:
+    db = session()
+    try:
+        db.execute(
+            text(
+                "CREATE TRIGGER fail_insert BEFORE INSERT ON loft_comments "
+                "WHEN NEW.text = 'boom' "
+                f"BEGIN SELECT RAISE(ABORT, '{message}'); END"
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
 def _fetch_raises(monkeypatch, message: str) -> None:
     def _fake(url, *, max_roots):
         raise RuntimeError(message)
@@ -263,6 +278,63 @@ class TestFetchAndStore:
         assert set(_stored(media_import_db)) == {"old"}
         assert _status(media_import_db) == (1, 5, "failed")
         assert emitted == [("files.updated", {"file_ids": [FILE_ID]}, [DRIVE])]
+
+    def test_a_statement_failing_in_the_store_step_leaves_the_old_snapshot(
+        self, media_import_db, monkeypatch, emitted
+    ) -> None:
+        _seed(media_import_db)
+        _fetch_returns(
+            monkeypatch,
+            CommentsResult(comments=[_raw("old")], total=5, channel_id=None),
+        )
+        manager = LoftManager()
+        manager._fetch_and_store_comments(_item())
+        emitted.clear()
+
+        _fail_inserting(media_import_db, "disk is full")
+        _fetch_returns(
+            monkeypatch,
+            CommentsResult(comments=[_raw("new", text="boom")], total=9, channel_id=None),
+        )
+        manager._fetch_and_store_comments(_item())
+
+        assert set(_stored(media_import_db)) == {"old"}
+        assert _status(media_import_db) == (1, 5, "failed")
+        assert emitted == [("files.updated", {"file_ids": [FILE_ID]}, [DRIVE])]
+
+    @pytest.mark.parametrize(
+        "marker", ["Private video", "HTTP Error 429: Too Many Requests"]
+    )
+    def test_a_store_error_is_never_read_for_fetch_markers(
+        self, media_import_db, monkeypatch, emitted, marker
+    ) -> None:
+        _seed(media_import_db)
+        _fail_inserting(media_import_db, marker)
+        _fetch_returns(
+            monkeypatch,
+            CommentsResult(comments=[_raw("new", text="boom")], total=9, channel_id=None),
+        )
+
+        LoftManager()._fetch_and_store_comments(_item())
+
+        assert _status(media_import_db) == (0, None, "failed")
+
+    @pytest.mark.parametrize("marker", ["Private video", "Sign in to confirm you're not a bot"])
+    def test_a_mapping_error_is_never_read_for_fetch_markers(
+        self, media_import_db, monkeypatch, emitted, marker
+    ) -> None:
+        _seed(media_import_db)
+        _fetch_returns(
+            monkeypatch, CommentsResult(comments=[_raw("a")], total=1, channel_id=None)
+        )
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError(marker)
+
+        monkeypatch.setattr(service, "map_comments", _boom)
+        LoftManager()._fetch_and_store_comments(_item())
+
+        assert _status(media_import_db) == (0, None, "failed")
 
     def test_failing_to_record_a_failure_still_lets_the_page_know(
         self, media_import_db, monkeypatch, emitted

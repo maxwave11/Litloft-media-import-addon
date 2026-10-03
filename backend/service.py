@@ -1103,8 +1103,10 @@ class LoftManager:
                 return
 
             limit = comments_limit()
+            fetched = False
             try:
                 result = fetch_comments_sync(item.url, max_roots=limit)
+                fetched = True
                 if result.comments is None:
                     record_failure(db, item.file_id, "disabled")
                 else:
@@ -1114,10 +1116,11 @@ class LoftManager:
                     replace_snapshot(db, item.file_id, rows, result.total)
             except Exception as exc:
                 logger.warning("Failed to fetch comments for %s: %s", item.url, exc)
+                # Only yt-dlp's messages carry the markers; a database error
+                # quotes the comment text and would be misread.
+                kind = "failed" if fetched else _classify_caption_error(str(exc)) or "failed"
                 try:
-                    record_failure(
-                        db, item.file_id, _classify_caption_error(str(exc)) or "failed"
-                    )
+                    record_failure(db, item.file_id, kind)
                 except Exception:
                     logger.warning(
                         "Could not record the comments failure for %s",
