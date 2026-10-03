@@ -1,4 +1,4 @@
-import { Copy, Heart, Loader2, Pin, RefreshCw, ThumbsUp } from "lucide-react";
+import { Copy, Heart, Loader2, MessagesSquare, Pin, RefreshCw, ThumbsUp } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import type { LoftComment, LoftComments } from "../api";
@@ -8,10 +8,18 @@ export const INITIAL_COMMENTS = 20;
 const ACTION_CLASS =
   "flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition-colors hover:bg-bg-elevated hover:text-text-primary disabled:opacity-50 pointer-coarse:min-h-11";
 
+const PRIMARY_CLASS =
+  "rounded-lg bg-accent-teal px-3 py-1.5 text-sm text-white transition-colors hover:bg-accent-teal/90 disabled:opacity-50 pointer-coarse:min-h-11";
+
+/** A fetch that failed for a reason pressing again can change. */
+const RETRYABLE = new Set(["rate_limited", "failed"]);
+
 interface PresenterProps {
   data: LoftComments;
   busy: boolean;
   showAll: boolean;
+  /** The block's own title; a tab already carries one. */
+  heading: boolean;
   onShowAll: () => void;
   onRequest: () => void;
   onCopy: () => void;
@@ -70,10 +78,17 @@ function CommentCard({ comment }: { comment: LoftComment }) {
   );
 }
 
+function Centered({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-3 px-3 py-8 text-center">{children}</div>
+  );
+}
+
 export default function YouTubeCommentsPresenter({
   data,
   busy,
   showAll,
+  heading,
   onShowAll,
   onRequest,
   onCopy,
@@ -81,6 +96,7 @@ export default function YouTubeCommentsPresenter({
   const t = useTranslations("mediaImport.comments");
   const { comments, state } = data;
   const pending = state === "queued";
+  const hasSnapshot = data.fetched_at !== null;
   const shown = showAll ? comments : comments.slice(0, INITIAL_COMMENTS);
   const day = data.fetched_at?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
   const summary = [
@@ -93,55 +109,77 @@ export default function YouTubeCommentsPresenter({
 
   return (
     <section aria-label={t("title")} data-testid="youtube-comments" className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className="text-sm font-medium text-text-primary">{t("title")}</h2>
-        {data.fetched_at !== null && <p className="text-xs text-text-muted">{summary}</p>}
-        <div className="ml-auto flex items-center gap-1">
-          {comments.length > 0 && (
-            <button type="button" onClick={onCopy} className={ACTION_CLASS}>
-              <Copy size={12} aria-hidden="true" />
-              {t("copy")}
-            </button>
+      {(heading || hasSnapshot) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {heading && <h2 className="text-sm font-medium text-text-primary">{t("title")}</h2>}
+          {hasSnapshot && <p className="text-xs text-text-muted">{summary}</p>}
+          {hasSnapshot && (
+            <div className="ml-auto flex items-center gap-1">
+              {comments.length > 0 && (
+                <button type="button" onClick={onCopy} className={ACTION_CLASS}>
+                  <Copy size={12} aria-hidden="true" />
+                  {t("copy")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onRequest}
+                disabled={busy || pending}
+                className={ACTION_CLASS}
+              >
+                <RefreshCw
+                  size={12}
+                  aria-hidden="true"
+                  className={busy || pending ? "animate-spin" : undefined}
+                />
+                {t("refresh")}
+              </button>
+            </div>
           )}
-          {state !== "none" && (
+        </div>
+      )}
+
+      {state === "error" && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-danger"
+        >
+          <p>{t(`error.${data.error_kind ?? "failed"}`)}</p>
+          {RETRYABLE.has(data.error_kind ?? "failed") && (
             <button
               type="button"
               onClick={onRequest}
-              disabled={busy || pending}
-              className={ACTION_CLASS}
+              disabled={busy}
+              className="underline disabled:opacity-50 pointer-coarse:min-h-11"
             >
-              <RefreshCw
-                size={12}
-                aria-hidden="true"
-                className={busy || pending ? "animate-spin" : undefined}
-              />
-              {t("refresh")}
+              {t("retry")}
             </button>
           )}
         </div>
-      </div>
-
-      {state === "error" && (
-        <p role="alert" className="text-xs text-danger">
-          {t(`error.${data.error_kind ?? "failed"}`)}
-        </p>
       )}
 
       {state === "none" && (
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="text-xs text-text-muted">{t("notLoaded")}</p>
-          <button
-            type="button"
-            onClick={onRequest}
-            disabled={busy}
-            className="rounded-lg bg-accent-teal px-2 py-1 text-xs text-white transition-colors hover:bg-accent-teal/90 disabled:opacity-50 pointer-coarse:min-h-11"
-          >
+        <Centered>
+          <MessagesSquare size={24} className="text-text-muted" aria-hidden="true" />
+          <p className="text-sm text-text-primary">{t("notLoaded")}</p>
+          <button type="button" onClick={onRequest} disabled={busy} className={PRIMARY_CLASS}>
             {t("load")}
           </button>
-        </div>
+          <p className="max-w-sm text-xs leading-relaxed text-text-muted">{t("loadHint")}</p>
+        </Centered>
       )}
 
-      {pending && (
+      {pending && comments.length === 0 && (
+        <Centered>
+          <Loader2 size={24} className="animate-spin text-text-muted" aria-hidden="true" />
+          <p role="status" className="text-sm text-text-primary">
+            {t("loading")}
+          </p>
+          <p className="max-w-sm text-xs leading-relaxed text-text-muted">{t("loadHint")}</p>
+        </Centered>
+      )}
+
+      {pending && comments.length > 0 && (
         <p role="status" className="flex items-center gap-2 text-xs text-text-muted">
           <Loader2 size={12} className="animate-spin" aria-hidden="true" />
           {t("loading")}

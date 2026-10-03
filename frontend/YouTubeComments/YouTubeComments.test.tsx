@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl";
 
 import type { LoftComment, LoftComments } from "@/addons/media_import/api";
 import en from "@/addons/media_import/messages/en.json";
+import { resetReadingTabs, useReadingTabHost, useReadingTabs } from "@/lib/readingTabs";
 
 const getLoftComments = vi.fn();
 const refreshLoftComments = vi.fn();
@@ -100,6 +101,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  act(() => resetReadingTabs());
 });
 
 describe("what is shown", () => {
@@ -232,7 +234,7 @@ describe("loading", () => {
     render(ui());
     await act(async () => {});
 
-    expect(screen.getByText("The comments have not been loaded yet.")).toBeInTheDocument();
+    expect(screen.getByText("Comments haven't been loaded for this video.")).toBeInTheDocument();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Load comments" }));
     });
@@ -453,5 +455,193 @@ describe("copying for an AI", () => {
 
     expect(toast.error).toHaveBeenCalledWith("Could not copy the comments");
     expect(toast.success).not.toHaveBeenCalled();
+  });
+});
+
+function Host() {
+  useReadingTabHost("f1");
+  const tabs = useReadingTabs("f1");
+  return (
+    <div>
+      {tabs.map((tab) => (
+        <section key={tab.id} data-testid={`tab-${tab.id}`} data-label={tab.label}>
+          {tab.panel}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+async function renderHosted(data: LoftComments | null, props = {}) {
+  getLoftComments.mockResolvedValue(data);
+  const view = render(
+    <>
+      <Host />
+      {ui(props)}
+    </>,
+  );
+  await act(async () => {});
+  return view;
+}
+
+describe("as a tab of the reading row", () => {
+  it("offers a Comments tab with the count and draws nothing of its own", async () => {
+    await renderHosted(payload());
+
+    const tab = screen.getByTestId("tab-comments");
+    expect(tab).toHaveAttribute("data-label", "Comments (1)");
+    expect(within(tab).getByText("text a")).toBeInTheDocument();
+    expect(screen.getAllByTestId("youtube-comments")).toHaveLength(1);
+  });
+
+  it("has no count in the label while nothing is loaded", async () => {
+    await renderHosted(payload({ state: "none", comments: [], total: null, fetched_at: null }));
+
+    expect(screen.getByTestId("tab-comments")).toHaveAttribute("data-label", "Comments");
+  });
+
+  it("counts the comments it holds, not the video's", async () => {
+    await renderHosted(payload({ total: 12345, comments: [comment("a"), comment("b")] }));
+
+    expect(screen.getByTestId("tab-comments")).toHaveAttribute("data-label", "Comments (2)");
+  });
+
+  it("leaves the heading to the tab", async () => {
+    await renderHosted(payload());
+
+    expect(within(screen.getByTestId("tab-comments")).queryByRole("heading")).toBeNull();
+  });
+
+  it("starts the fetch from the button inside the tab", async () => {
+    refreshLoftComments.mockResolvedValue({ status: "queued" });
+    await renderHosted(payload({ state: "none", comments: [], total: null, fetched_at: null }));
+    getLoftComments.mockResolvedValue(
+      payload({ state: "queued", comments: [], total: null, fetched_at: null }),
+    );
+
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByTestId("tab-comments")).getByRole("button", { name: "Load comments" }),
+      );
+    });
+
+    expect(refreshLoftComments).toHaveBeenCalledWith("f1", "d");
+    expect(within(screen.getByTestId("tab-comments")).getByText("Loading comments…")).toBeInTheDocument();
+  });
+
+  it("updates the label when a finished fetch brings the comments", async () => {
+    const { rerender } = await renderHosted(
+      payload({ state: "queued", comments: [], total: null, fetched_at: null }),
+    );
+    getLoftComments.mockResolvedValue(
+      payload({ comments: [comment("a"), comment("b"), comment("c")] }),
+    );
+
+    wsEvent = { event: "drive.file_updated", data: { drive: "d" } };
+    rerender(
+      <>
+        <Host />
+        {ui()}
+      </>,
+    );
+    await act(async () => {});
+
+    expect(screen.getByTestId("tab-comments")).toHaveAttribute("data-label", "Comments (3)");
+  });
+
+  it.each([
+    ["a file that is not a .loft", { filename: "movie.mp4" }, payload()],
+    [
+      "a loft whose provider has none",
+      {},
+      payload({ supported: false, state: "none", comments: [] }),
+    ],
+  ])("offers no tab for %s", async (_name, props, data) => {
+    await renderHosted(data, props);
+
+    expect(screen.queryByTestId("tab-comments")).toBeNull();
+  });
+
+  it("withdraws the tab when the page moves on", async () => {
+    const view = await renderHosted(payload());
+
+    view.rerender(<Host />);
+    await act(async () => {});
+
+    expect(screen.queryByTestId("tab-comments")).toBeNull();
+  });
+});
+
+describe("on its own, when nothing draws the row", () => {
+  it("keeps the heading so the block still says what it is", async () => {
+    await renderLoaded(payload());
+
+    expect(screen.getByRole("heading", { name: "YouTube comments" })).toBeInTheDocument();
+  });
+});
+
+describe("the panel's states", () => {
+  const none = () => payload({ state: "none", comments: [], total: null, fetched_at: null });
+  const firstLoad = () =>
+    payload({ state: "queued", comments: [], total: null, fetched_at: null });
+
+  it("tells how long loading takes before it is started", async () => {
+    await renderLoaded(none());
+
+    expect(screen.getByText(/can take a few minutes/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load comments" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+  });
+
+  it("tells it again while the first load runs, with nothing else to press", async () => {
+    await renderLoaded(firstLoad());
+
+    expect(screen.getByText("Loading comments…")).toBeInTheDocument();
+    expect(screen.getByText(/can take a few minutes/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load comments" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the list and drops the long hint while a refresh runs", async () => {
+    await renderLoaded(payload({ state: "queued" }));
+
+    expect(screen.getByText("Loading comments…")).toBeInTheDocument();
+    expect(screen.getByText("text a")).toBeInTheDocument();
+    expect(screen.queryByText(/can take a few minutes/)).not.toBeInTheDocument();
+  });
+
+  it.each(["rate_limited", "failed"] as const)(
+    "offers Try again in the %s message and it starts a new fetch",
+    async (kind) => {
+      refreshLoftComments.mockResolvedValue({ status: "queued" });
+      await renderLoaded(payload({ state: "error", error_kind: kind }));
+
+      await act(async () => {
+        fireEvent.click(
+          within(screen.getByRole("alert")).getByRole("button", { name: "Try again" }),
+        );
+      });
+
+      expect(refreshLoftComments).toHaveBeenCalledWith("f1", "d");
+    },
+  );
+
+  it.each(["disabled", "permanent"] as const)(
+    "offers no Try again when the cause is %s",
+    async (kind) => {
+      await renderLoaded(payload({ state: "error", error_kind: kind }));
+
+      expect(within(screen.getByRole("alert")).queryByRole("button")).toBeNull();
+    },
+  );
+
+  it("offers Try again when a failure left nothing stored", async () => {
+    await renderLoaded(
+      payload({ state: "error", error_kind: "failed", comments: [], total: null, fetched_at: null }),
+    );
+
+    expect(
+      within(screen.getByRole("alert")).getByRole("button", { name: "Try again" }),
+    ).toBeInTheDocument();
   });
 });
