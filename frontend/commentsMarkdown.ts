@@ -11,6 +11,11 @@ const ROLE_TAG = /\[(AUTHOR|VIEWER)\]/gi;
 // Every break a pasted text can carry: a chat box turns a lone CR or a Unicode
 // separator into a new line, which would then escape the `>` quoting.
 const LINE_BREAK = /\r\n|[\n\r\u2028\u2029\u0085\v\f]/;
+const LINE_BREAKS = new RegExp(LINE_BREAK.source, "g");
+
+function oneLine(text: string): string {
+  return text.replace(LINE_BREAKS, " ").replace(/\s+/g, " ").trim();
+}
 
 // A comment is anyone's text, so it must not be able to pass for the role
 // tag the reader relies on: the tag is replaced inside the text, and every
@@ -52,7 +57,7 @@ function likes(count: number | null): string | null {
 }
 
 function item(comment: LoftComment, indent: string): string[] {
-  const author = plain(comment.author?.replace(/\s+/g, " ").trim() || "unknown");
+  const author = plain(oneLine(comment.author ?? "") || "unknown");
   const facts = [
     likes(comment.like_count),
     comment.is_pinned ? "pinned" : null,
@@ -72,7 +77,7 @@ export function formatCommentsMarkdown(
   title: string,
   snapshot: CommentsSnapshot,
 ): string {
-  const name = title.replace(/\s+/g, " ").trim();
+  const name = oneLine(title);
   const heading = name ? `# YouTube comments: ${name}` : "# YouTube comments";
   if (snapshot.comments.length === 0) return `${heading}\n\nNo comments.`;
   const body = snapshot.comments.flatMap((comment) => item(comment, ""));
