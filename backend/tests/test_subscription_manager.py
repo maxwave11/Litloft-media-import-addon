@@ -1448,3 +1448,55 @@ def test_cancelled_scheduled_task_does_not_turn_into_a_normal_sync(media_import_
     asyncio.run(scenario())
     assert calls == []
     assert subdb.load_subscription(sid)["fetch_all_status"] == "cancelled"
+
+
+@pytest.mark.parametrize("entry", ["sync", "retry_item", "fetch_more", "fetch_all"])
+def test_no_import_path_of_a_subscription_asks_for_comments(
+    media_import_db, drive_path, fake_provider, monkeypatch, entry
+):
+    import yt_dlp
+
+    from addons.media_import.service import LoftManager
+    from addons.media_import.subscription import db as subdb
+    from addons.media_import.subscription.manager import SubscriptionManager
+
+    asked: list[str] = []
+
+    class _NoComments:
+        def __init__(self, opts):
+            if opts.get("getcomments"):
+                asked.append("yt-dlp getcomments")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def extract_info(self, *_a, **_kw):
+            return {}
+
+    async def _record(self, *_a, **_kw):
+        asked.append("enqueue_comments")
+        return "queued"
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _NoComments)
+    monkeypatch.setattr(LoftManager, "enqueue_comments", _record)
+
+    fake_provider.headers = [ItemHeader(item_id="vid_a"), ItemHeader(item_id="vid_b")]
+    manager = SubscriptionManager()
+    sid = manager.create(url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d")
+
+    if entry == "sync":
+        manager._sync_blocking(sid)
+    elif entry == "retry_item":
+        manager._sync_blocking(sid)
+        manager._sync_blocking(sid, item_id="vid_a")
+    elif entry == "fetch_more":
+        manager._sync_backfill_blocking(sid, 2)
+    else:
+        subdb.start_fetch_all(sid)
+        manager._sync_all_blocking(sid)
+
+    assert subdb.count_seen_item_ids(sid) >= 1
+    assert asked == []

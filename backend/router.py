@@ -34,6 +34,7 @@ from app.database import SessionLocal
 
 from .schemas import (
     ActivityEntry,
+    LoftCommentsResponse,
     LoftCreateRequest,
     LoftCreateResponse,
     LoftMetadataResponse,
@@ -54,6 +55,7 @@ from .schemas import (
     WatchLane,
     WatchPlayback,
 )
+from .comments import load_snapshot, supports_comments
 from .subscription import db as subdb
 from .subscription.registry import find_subscription_provider_by_url
 from .service import (
@@ -175,7 +177,7 @@ async def create_loft(
         raise HTTPException(status_code=500, detail="Failed to create link")
 
     await loft_manager.enqueue_fetch(
-        file_id, request.url, request.drive, request.stt_mode
+        file_id, request.url, request.drive, request.stt_mode, fetch_comments=True
     )
 
     return LoftCreateResponse(file_id=file_id, filename=filename)
@@ -245,6 +247,70 @@ async def refresh_loft(
 
     await loft_manager.enqueue_fetch(file_id, url, scoped)
     return {"status": "queued"}
+
+
+@router.get("/link/{file_id}/comments", response_model=LoftCommentsResponse)
+async def get_loft_comments(
+    file_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> LoftCommentsResponse:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    db = SessionLocal()
+    try:
+        _require_active_file_in_drive(db, file_id, scoped)
+        row = db.execute(
+            text(
+                "SELECT url, comments_fetched_at, comments_total, comments_error_kind "
+                "FROM loft_metadata WHERE file_id = :file_id"
+            ),
+            {"file_id": file_id},
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Metadata not found")
+        if not supports_comments(row["url"]):
+            return LoftCommentsResponse(supported=False, state="none")
+
+        if loft_manager.comments_pending(file_id):
+            state = "queued"
+        elif row["comments_error_kind"]:
+            state = "error"
+        elif row["comments_fetched_at"]:
+            state = "ready"
+        else:
+            state = "none"
+        return LoftCommentsResponse(
+            supported=True,
+            state=state,
+            error_kind=row["comments_error_kind"],
+            fetched_at=row["comments_fetched_at"],
+            total=row["comments_total"],
+            comments=load_snapshot(db, file_id),
+        )
+    finally:
+        db.close()
+
+
+@router.post("/link/{file_id}/comments/refresh", status_code=202)
+async def refresh_loft_comments(
+    file_id: str,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> dict:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    db = SessionLocal()
+    try:
+        _require_active_file_in_drive(db, file_id, scoped)
+    finally:
+        db.close()
+
+    try:
+        status = await loft_manager.enqueue_comments(file_id, scoped)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": status}
 
 
 @router.post("/link/{file_id}/stt")

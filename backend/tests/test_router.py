@@ -62,7 +62,11 @@ class TestCreateLoftEndpoint:
         captured: list[tuple[str, str, str, str]] = []
 
         async def _capture(
-            file_id: str, url: str, drive: str, stt_mode: str = "manual"
+            file_id: str,
+            url: str,
+            drive: str,
+            stt_mode: str = "manual",
+            fetch_comments: bool = False,
         ) -> None:
             captured.append((file_id, url, drive, stt_mode))
 
@@ -89,6 +93,30 @@ class TestCreateLoftEndpoint:
                 "missing_captions",
             )
         ]
+
+    def test_single_import_asks_for_comments(self, client) -> None:
+        from addons.media_import.router import loft_manager
+
+        flags: list[bool] = []
+
+        async def _capture(*_a, fetch_comments: bool = False, **_kw) -> None:
+            flags.append(fetch_comments)
+
+        with patch.object(loft_manager, "enqueue_fetch", _capture), patch(
+            "addons.media_import.service._extract_title_sync",
+            return_value="Test Video",
+        ):
+            res = client.post(
+                "/api/addons/media_import/link",
+                json={
+                    "url": "https://www.youtube.com/watch?v=abc",
+                    "drive": "drv",
+                    "folder_path": "",
+                },
+            )
+
+        assert res.status_code == 200
+        assert flags == [True]
 
     def test_rejects_blank_url(self, client) -> None:
         res = client.post(

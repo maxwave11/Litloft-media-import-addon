@@ -23,6 +23,7 @@ class LoftFetchItem(BaseModel):
     drive: str
     status: str = "queued"  # queued | fetching | completed | error
     stt_mode: SttMode = "manual"
+    fetch_comments: bool = False
 
 
 class LoftMetadataResponse(BaseModel):
@@ -37,6 +38,27 @@ class LoftMetadataResponse(BaseModel):
     caption_error_kind: str | None = None
     fetched_at: str | None = None
     fetch_error: str | None = None
+
+
+class LoftCommentOut(BaseModel):
+    id: str
+    author: str | None = None
+    author_is_uploader: bool = False
+    is_pinned: bool = False
+    is_hearted: bool = False
+    text: str
+    like_count: int | None = None
+    published_at: str | None = None
+    replies: list["LoftCommentOut"] = []
+
+
+class LoftCommentsResponse(BaseModel):
+    supported: bool
+    state: Literal["none", "queued", "ready", "error"]
+    error_kind: str | None = None
+    fetched_at: str | None = None
+    total: int | None = None
+    comments: list[LoftCommentOut] = []
 
 
 # ---- Subscription schemas (Phase 2 Commit 4) -----------------------

@@ -26,6 +26,15 @@ from sqlalchemy import text
 
 from app.services import event_hooks
 
+from .comments import (
+    comments_limit,
+    ensure_comments_schema,
+    fetch_comments_sync,
+    map_comments,
+    record_failure,
+    replace_snapshot,
+    supports_comments,
+)
 from .schemas import LoftFetchItem, SttMode
 
 logger = logging.getLogger(__name__)
@@ -640,6 +649,8 @@ class LoftManager:
         self._items: dict[str, LoftFetchItem] = {}
         self._stt_queue: asyncio.Queue[str] = asyncio.Queue()
         self._stt_items: dict[str, LoftFetchItem] = {}
+        self._comments_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._comments_items: dict[str, LoftFetchItem] = {}
 
     @property
     def pending_items(self) -> list[LoftFetchItem]:
@@ -652,6 +663,7 @@ class LoftManager:
         await asyncio.to_thread(_cleanup_stale_stt_temp_files)
         asyncio.create_task(self._worker())
         asyncio.create_task(self._stt_worker())
+        asyncio.create_task(self._comments_worker())
         asyncio.create_task(self._retry_failed_captions())
         asyncio.create_task(self._cleanup_stale_stt_temp_files_periodically())
         logger.info("Loft fetch worker started")
@@ -725,6 +737,7 @@ class LoftManager:
         url: str,
         drive: str,
         stt_mode: SttMode = "manual",
+        fetch_comments: bool = False,
     ) -> None:
         """Queue a metadata fetch for a newly created .loft."""
         item = LoftFetchItem(
@@ -733,6 +746,7 @@ class LoftManager:
             drive=drive,
             status="queued",
             stt_mode=stt_mode,
+            fetch_comments=fetch_comments,
         )
         self._items[file_id] = item
         await self._queue.put(file_id)
@@ -748,6 +762,20 @@ class LoftManager:
         await self._stt_queue.put(file_id)
         return "queued"
 
+    def comments_pending(self, file_id: str) -> bool:
+        item = self._comments_items.get(file_id)
+        return bool(item and item.status in ("queued", "fetching"))
+
+    async def enqueue_comments(self, file_id: str, drive: str) -> str:
+        """Queue a comments snapshot for a YouTube .loft."""
+        if self.comments_pending(file_id):
+            return "already_queued"
+
+        item = self._load_comments_item(file_id, drive)
+        self._comments_items[file_id] = item
+        await self._comments_queue.put(file_id)
+        return "queued"
+
     async def _worker(self) -> None:
         while True:
             file_id = await self._queue.get()
@@ -760,6 +788,13 @@ class LoftManager:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, self._fetch_and_update, item)
                 item.status = "completed"
+                if item.fetch_comments and supports_comments(item.url):
+                    try:
+                        await self.enqueue_comments(item.file_id, item.drive)
+                    except Exception:
+                        logger.warning(
+                            "Could not queue comments for %s", item.file_id, exc_info=True
+                        )
             except Exception:
                 logger.exception("Loft fetch failed: %s", item.url)
                 item.status = "error"
@@ -783,6 +818,24 @@ class LoftManager:
                 item.status = "error"
             finally:
                 self._stt_queue.task_done()
+
+    async def _comments_worker(self) -> None:
+        while True:
+            file_id = await self._comments_queue.get()
+            item = self._comments_items.get(file_id)
+            if not item or item.status != "queued":
+                self._comments_queue.task_done()
+                continue
+            try:
+                item.status = "fetching"
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._fetch_and_store_comments, item)
+                item.status = "completed"
+            except Exception:
+                logger.exception("Loft comments fetch failed: %s", item.url)
+                item.status = "error"
+            finally:
+                self._comments_queue.task_done()
 
     async def _cleanup_stale_stt_temp_files_periodically(self) -> None:
         while True:
@@ -825,6 +878,37 @@ class LoftManager:
                 drive=drive,
                 status="queued",
                 stt_mode="always",
+            )
+        finally:
+            db.close()
+
+    def _load_comments_item(self, file_id: str, drive: str) -> LoftFetchItem:
+        db = SessionLocal()
+        try:
+            file_record = (
+                db.query(File)
+                .filter(
+                    File.id == file_id,
+                    File.drive == drive,
+                    File.deleted_at.is_(None),
+                    File.missing_since.is_(None),
+                )
+                .first()
+            )
+            if not file_record or file_record.mime_type != _LOFT_MIME:
+                raise FileNotFoundError(file_id)
+
+            row = db.execute(
+                text("SELECT url FROM loft_metadata WHERE file_id = :file_id"),
+                {"file_id": file_id},
+            ).mappings().first()
+            if not row or not row["url"]:
+                raise ValueError("Refresh the metadata first")
+            if not supports_comments(row["url"]):
+                raise ValueError("Comments are only available for YouTube videos")
+
+            return LoftFetchItem(
+                file_id=file_id, url=row["url"], drive=drive, status="queued"
             )
         finally:
             db.close()
@@ -1008,6 +1092,39 @@ class LoftManager:
         finally:
             db.close()
 
+    def _fetch_and_store_comments(self, item: LoftFetchItem) -> None:
+        db = SessionLocal()
+        try:
+            has_metadata = db.execute(
+                text("SELECT 1 FROM loft_metadata WHERE file_id = :file_id"),
+                {"file_id": item.file_id},
+            ).first()
+            if not has_metadata:
+                return
+
+            limit = comments_limit()
+            try:
+                result = fetch_comments_sync(item.url, max_roots=limit)
+            except Exception as exc:
+                logger.warning("Failed to fetch comments for %s: %s", item.url, exc)
+                record_failure(
+                    db, item.file_id, _classify_caption_error(str(exc)) or "failed"
+                )
+            else:
+                if result.comments is None:
+                    record_failure(db, item.file_id, "disabled")
+                else:
+                    rows = map_comments(
+                        result.comments, channel_id=result.channel_id, max_roots=limit
+                    )
+                    replace_snapshot(db, item.file_id, rows, result.total)
+
+            event_hooks.emit_sync(
+                "files.updated", {"file_ids": [item.file_id]}, drives=[item.drive]
+            )
+        finally:
+            db.close()
+
     def _download_stt_and_notify(self, item: LoftFetchItem) -> Path:
         db = SessionLocal()
         output_stem: Path | None = None
@@ -1124,6 +1241,7 @@ def _ensure_loft_table() -> None:
             )
         except Exception:
             pass
+        ensure_comments_schema(db)
         db.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_loft_metadata_dedup "

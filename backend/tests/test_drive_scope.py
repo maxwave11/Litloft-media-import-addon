@@ -25,6 +25,8 @@ ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", f"{_P}/link/f1/metadata", None),
     ("POST", f"{_P}/link/f1/refresh", None),
     ("POST", f"{_P}/link/f1/stt", None),
+    ("GET", f"{_P}/link/f1/comments", None),
+    ("POST", f"{_P}/link/f1/comments/refresh", None),
     ("POST", f"{_P}/subscriptions/resolve", {"url": _URL}),
     ("POST", f"{_P}/subscriptions", {"url": _URL, "drive": "{drive}"}),
     ("GET", f"{_P}/subscriptions?drive={{drive}}", None),
@@ -103,7 +105,7 @@ def test_routes_table_is_every_drive_scoped_route() -> None:
         and route.path_regex.match(path.split("?")[0])
     }
 
-    assert len(ROUTES) == 22
+    assert len(ROUTES) == 24
     assert declared == scoped
 
 
