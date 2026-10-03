@@ -50,9 +50,11 @@ export default function YouTubeCommentsContainer({
   const reload = useCallback(async () => {
     try {
       const next = await getLoftComments(fileId, drive);
-      if (keyRef.current === `${drive}/${fileId}`) setData(next);
+      // No answer, thrown or empty, leaves what is on screen: a blip while a
+      // fetch runs must not take the tab away and stop the page asking.
+      if (keyRef.current === `${drive}/${fileId}`) setData((prev) => next ?? prev);
     } catch {
-      // Leaves what is on screen.
+      // Same: leaves what is on screen.
     }
   }, [fileId, drive]);
 
@@ -64,14 +66,18 @@ export default function YouTubeCommentsContainer({
   }, [eligible, reload]);
 
   const pending = data?.state === "queued";
+  // A page opened before a fetch exists has nothing to wait on, yet must learn
+  // that one started: no metadata row yet, or Load comments on offer.
+  const awaiting =
+    eligible && (data === null || (data.supported && (pending || data.state === "none")));
 
   // The event carries the drive and no file id, so it only says "look again".
   const seenEvent = useRef(filesUpdated);
   useEffect(() => {
     if (filesUpdated === seenEvent.current) return;
     seenEvent.current = filesUpdated;
-    if (pending && filesUpdated?.data?.drive === drive) void reload();
-  }, [filesUpdated, pending, drive, reload]);
+    if (awaiting && filesUpdated?.data?.drive === drive) void reload();
+  }, [filesUpdated, awaiting, drive, reload]);
 
   useEffect(() => {
     if (!pending) return;

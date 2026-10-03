@@ -360,6 +360,82 @@ describe("following a pending fetch", () => {
     expect(getLoftComments).not.toHaveBeenCalled();
   });
 
+  it("keeps the loading page, and keeps asking, when a re-read gets no answer", async () => {
+    vi.useFakeTimers();
+    getLoftComments
+      .mockResolvedValueOnce(queued())
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(payload());
+    render(ui());
+    await act(async () => {});
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(screen.getByText("Loading comments…")).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(screen.getByText("text a")).toBeInTheDocument();
+  });
+
+  it("picks up a fetch queued after the page opened on a loft with no metadata yet", async () => {
+    getLoftComments.mockResolvedValue(null);
+    const { rerender, container } = render(ui());
+    await act(async () => {});
+    expect(container).toBeEmptyDOMElement();
+
+    getLoftComments.mockResolvedValue(queued());
+    wsEvent = { event: "drive.file_updated", data: { drive: "d" } };
+    rerender(ui());
+    await act(async () => {});
+
+    expect(screen.getByText("Loading comments…")).toBeInTheDocument();
+  });
+
+  it("picks up a fetch that starts while the page offers Load comments", async () => {
+    getLoftComments.mockResolvedValue(
+      payload({ state: "none", comments: [], total: null, fetched_at: null }),
+    );
+    const { rerender } = render(ui());
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: "Load comments" })).toBeInTheDocument();
+
+    getLoftComments.mockResolvedValue(queued());
+    wsEvent = { event: "drive.file_updated", data: { drive: "d" } };
+    rerender(ui());
+    await act(async () => {});
+
+    expect(screen.getByText("Loading comments…")).toBeInTheDocument();
+  });
+
+  it("does not keep asking about a loft whose provider has no comments", async () => {
+    getLoftComments.mockResolvedValue(
+      payload({ supported: false, state: "none", comments: [], total: null, fetched_at: null }),
+    );
+    const { rerender } = render(ui());
+    await act(async () => {});
+    getLoftComments.mockClear();
+
+    wsEvent = { event: "drive.file_updated", data: { drive: "d" } };
+    rerender(ui());
+    await act(async () => {});
+
+    expect(getLoftComments).not.toHaveBeenCalled();
+  });
+
+  it("does not ask on updates about a file that is not a .loft", async () => {
+    const { rerender } = render(ui({ filename: "movie.mp4" }));
+    await act(async () => {});
+
+    wsEvent = { event: "drive.file_updated", data: { drive: "d" } };
+    rerender(ui({ filename: "movie.mp4" }));
+    await act(async () => {});
+
+    expect(getLoftComments).not.toHaveBeenCalled();
+  });
+
   it("does not treat an old update as news when a fetch starts", async () => {
     wsEvent = { event: "drive.file_updated", data: { drive: "d" } };
     refreshLoftComments.mockResolvedValue({ status: "queued" });
