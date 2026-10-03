@@ -1,15 +1,11 @@
 import { Copy, Heart, Loader2, MessagesSquare, Pin, RefreshCw, ThumbsUp } from "lucide-react";
 import { useTranslations } from "next-intl";
 
+import { Button } from "@/components/Button";
+
 import type { LoftComment, LoftComments } from "../api";
 
 export const INITIAL_COMMENTS = 20;
-
-const ACTION_CLASS =
-  "flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition-colors hover:bg-bg-elevated hover:text-text-primary disabled:opacity-50 pointer-coarse:min-h-11";
-
-const PRIMARY_CLASS =
-  "rounded-lg bg-accent-teal px-3 py-1.5 text-sm text-white transition-colors hover:bg-accent-teal/90 disabled:opacity-50 pointer-coarse:min-h-11";
 
 /** A fetch that failed for a reason pressing again can change. */
 const RETRYABLE = new Set(["rate_limited", "failed"]);
@@ -37,7 +33,7 @@ function CommentCard({ comment }: { comment: LoftComment }) {
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-text-muted">
         <span className="font-medium text-text-primary">{comment.author ?? "—"}</span>
         {byAuthor && (
-          <span className="rounded-full bg-accent-teal px-1.5 py-0.5 text-[11px] font-medium text-white">
+          <span className="rounded-full bg-accent-teal/15 px-2 py-0.5 text-xs font-medium text-accent-teal">
             {t("author")}
           </span>
         )}
@@ -116,16 +112,16 @@ export default function YouTubeCommentsPresenter({
           {hasSnapshot && (
             <div className="ml-auto flex items-center gap-1">
               {comments.length > 0 && (
-                <button type="button" onClick={onCopy} className={ACTION_CLASS}>
+                <Button variant="ghost" size="sm" onClick={onCopy}>
                   <Copy size={12} aria-hidden="true" />
                   {t("copy")}
-                </button>
+                </Button>
               )}
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={onRequest}
                 disabled={busy || pending}
-                className={ACTION_CLASS}
               >
                 <RefreshCw
                   size={12}
@@ -133,7 +129,7 @@ export default function YouTubeCommentsPresenter({
                   className={busy || pending ? "animate-spin" : undefined}
                 />
                 {t("refresh")}
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -146,14 +142,9 @@ export default function YouTubeCommentsPresenter({
         >
           <p>{t(`error.${data.error_kind ?? "failed"}`)}</p>
           {RETRYABLE.has(data.error_kind ?? "failed") && (
-            <button
-              type="button"
-              onClick={onRequest}
-              disabled={busy}
-              className="underline disabled:opacity-50 pointer-coarse:min-h-11"
-            >
+            <Button variant="danger" size="sm" onClick={onRequest} disabled={busy}>
               {t("retry")}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -162,9 +153,9 @@ export default function YouTubeCommentsPresenter({
         <Centered>
           <MessagesSquare size={24} className="text-text-muted" aria-hidden="true" />
           <p className="text-sm text-text-primary">{t("notLoaded")}</p>
-          <button type="button" onClick={onRequest} disabled={busy} className={PRIMARY_CLASS}>
+          <Button variant="primary" onClick={onRequest} disabled={busy}>
             {t("load")}
-          </button>
+          </Button>
           <p className="max-w-sm text-xs leading-relaxed text-text-muted">{t("loadHint")}</p>
         </Centered>
       )}
@@ -201,9 +192,9 @@ export default function YouTubeCommentsPresenter({
       )}
 
       {!showAll && comments.length > INITIAL_COMMENTS && (
-        <button type="button" onClick={onShowAll} className={ACTION_CLASS}>
+        <Button variant="ghost" size="sm" onClick={onShowAll}>
           {t("showAll", { count: comments.length })}
-        </button>
+        </Button>
       )}
     </section>
   );
