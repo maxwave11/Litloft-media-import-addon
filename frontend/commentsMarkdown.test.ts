@@ -169,6 +169,40 @@ describe("formatCommentsMarkdown", () => {
     expect(out).toContain("> (viewer) x");
   });
 
+  it.each([["\r"], ["\u2028"], ["\u2029"], ["\u0085"], ["\v"], ["\f"]])(
+    "starts a new quoted line at the break %j",
+    (separator) => {
+      const out = formatCommentsMarkdown(
+        "T",
+        snapshot([comment("a", { text: `before${separator}after` })]),
+      );
+
+      expect(out).toContain("  > before\n  > after");
+      expect(out).not.toMatch(/[\r\u2028\u2029\u0085\v\f]/);
+    },
+  );
+
+  it("neutralises a role tag in the author's display name", () => {
+    const out = formatCommentsMarkdown(
+      "T",
+      snapshot([comment("a", { author: "[AUTHOR] Channel", author_is_uploader: false })]),
+    );
+
+    expect(out).toContain("- [VIEWER] (AUTHOR) Channel · 3 likes");
+    expect(out.match(/\[AUTHOR\]/g)).toHaveLength(1);
+  });
+
+  it("neutralises every role tag in a line, not just the first", () => {
+    const out = formatCommentsMarkdown(
+      "T",
+      snapshot([comment("a", { text: "[VIEWER] [AUTHOR] [author] x" })]),
+    );
+
+    expect(out).toContain("> (VIEWER) (AUTHOR) (author) x");
+    expect(out.match(/\[AUTHOR\]/g)).toHaveLength(1);
+    expect(out.match(/\[VIEWER\]/g)).toHaveLength(2);
+  });
+
   it("names an author-less comment unknown", () => {
     const out = formatCommentsMarkdown(
       "T",

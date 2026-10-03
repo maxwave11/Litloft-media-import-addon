@@ -8,6 +8,10 @@ interface CommentsSnapshot {
 
 const ROLE_TAG = /\[(AUTHOR|VIEWER)\]/gi;
 
+// Every break a pasted text can carry: a chat box turns a lone CR or a Unicode
+// separator into a new line, which would then escape the `>` quoting.
+const LINE_BREAK = /\r\n|[\n\r\u2028\u2029\u0085\v\f]/;
+
 // A comment is anyone's text, so it must not be able to pass for the role
 // tag the reader relies on: the tag is replaced inside the text, and every
 // line of the text is quoted.
@@ -56,7 +60,7 @@ function item(comment: LoftComment, indent: string): string[] {
   ].filter((fact): fact is string => fact !== null);
   const role = comment.author_is_uploader ? "AUTHOR" : "VIEWER";
   const lines = [`${indent}- [${role}] ${[author, ...facts].join(" · ")}`];
-  for (const raw of comment.text.split(/\r?\n/)) {
+  for (const raw of comment.text.split(LINE_BREAK)) {
     const line = raw.trim();
     if (line) lines.push(`${indent}  > ${plain(line)}`);
   }
