@@ -21,6 +21,7 @@ _URL = "https://www.youtube.com/watch?v=abc"
 # Every route that takes X-Lit-Drive, with a body that passes validation so
 # the drive check is what answers. ``{drive}`` is filled with the header's name.
 ROUTES: list[tuple[str, str, dict | None]] = [
+    ("POST", f"{_P}/link/card-metadata", {"file_ids": ["f1"]}),
     ("POST", f"{_P}/link", {"url": _URL, "drive": "{drive}"}),
     ("GET", f"{_P}/link/f1/metadata", None),
     ("POST", f"{_P}/link/f1/refresh", None),
@@ -105,7 +106,7 @@ def test_routes_table_is_every_drive_scoped_route() -> None:
         and route.path_regex.match(path.split("?")[0])
     }
 
-    assert len(ROUTES) == 24
+    assert len(ROUTES) == 25
     assert declared == scoped
 
 

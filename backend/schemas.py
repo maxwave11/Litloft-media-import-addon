@@ -12,6 +12,10 @@ class LoftCreateRequest(BaseModel):
     stt_mode: SttMode = "manual"
 
 
+class CardMetadataRequest(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class LoftCreateResponse(BaseModel):
     file_id: str
     filename: str

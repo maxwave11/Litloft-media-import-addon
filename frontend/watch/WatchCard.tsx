@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { ExternalLink, ListPlus } from "lucide-react";
+import { FileMetadataSlots } from "@/components/FileMetadataSlots";
+import { useAddonSlots } from "@/components/AddonSlotsProvider";
 
 import type { WatchItem } from "../api";
 
@@ -22,6 +24,7 @@ function formatPublished(raw: string | null): string | null {
 
 export default function WatchCard({ item, onAddToCollection }: Props) {
   const t = useTranslations("mediaImport.watch");
+  const { catalogueDrive } = useAddonSlots();
   const published = formatPublished(item.published_at);
   const playback = item.playback;
   const completed = playback?.state === "completed";
@@ -90,10 +93,13 @@ export default function WatchCard({ item, onAddToCollection }: Props) {
             {item.title || item.filename}
           </Link>
         </span>
-        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
-          {item.channel && <span className="truncate">{item.channel}</span>}
-          {item.channel && published && <span>·</span>}
-          {published && <span>{published}</span>}
+        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-text-muted">
+          <div className="flex min-w-0 flex-1 items-center gap-x-1.5 overflow-hidden whitespace-nowrap">
+            {item.channel && <span className="truncate" title={item.channel}>{item.channel}</span>}
+            {item.channel && published && <span>·</span>}
+            {published && <span className="shrink-0">{published}</span>}
+          </div>
+          {catalogueDrive && <FileMetadataSlots fileId={item.file_id} drive={catalogueDrive} filename={item.filename} fileType="video" part="indicators" />}
         </div>
 
         {/* No play/resume button: it went to the same route as the

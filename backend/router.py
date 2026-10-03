@@ -26,13 +26,14 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 import app.config as config
 from app.auth import check_drive_access, get_unlocked_groups, get_viewer_id
 from app.database import SessionLocal
 
 from .schemas import (
+    CardMetadataRequest,
     ActivityEntry,
     LoftCommentsResponse,
     LoftCreateRequest,
@@ -87,6 +88,12 @@ ADDON_META = {
         "priority": 10,
     },
     "slots": {
+        "file-card-metadata": [
+            {"id": "card-channel", "label": "Channel", "priority": 10},
+        ],
+        "file-card-indicators": [
+            {"id": "card-comments", "label": "Comments status", "priority": 30},
+        ],
         "loft-metadata": [
             {"id": "loft-metadata", "label": "Loft Metadata", "priority": 10},
         ],
@@ -205,6 +212,39 @@ def _require_active_file_in_drive(db, file_id: str, scoped_drive: str) -> None:
     )
     if not found:
         raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.post("/link/card-metadata")
+async def get_card_metadata(
+    body: CardMetadataRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> dict:
+    from app.models import File, active_file_filter
+
+    drive = _scoped_drive(x_lit_drive, unlocked_groups)
+    db = SessionLocal()
+    try:
+        ids = [row[0] for row in db.query(File.id).filter(
+            File.drive == drive, File.id.in_(body.file_ids), active_file_filter(),
+        ).all()]
+        if not ids:
+            return {}
+        statement = text("""
+            SELECT file_id, channel, url, captions_downloaded,
+              comments_fetched_at, comments_error_kind
+            FROM loft_metadata WHERE file_id IN :ids
+        """).bindparams(bindparam("ids", expanding=True))
+        rows = db.execute(statement, {"ids": ids}).mappings().all()
+        return {row["file_id"]: {
+            "channel": row["channel"],
+            "captions_downloaded": bool(row["captions_downloaded"]),
+            "comments": ("working" if loft_manager.comments_pending(row["file_id"]) else
+                "ready" if row["comments_fetched_at"] else
+                "error" if row["comments_error_kind"] else "missing") if supports_comments(row["url"]) else None,
+        } for row in rows}
+    finally:
+        db.close()
 
 
 @router.get("/link/{file_id}/metadata", response_model=LoftMetadataResponse)
