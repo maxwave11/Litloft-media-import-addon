@@ -90,6 +90,9 @@ ADDON_META = {
         "loft-metadata": [
             {"id": "loft-metadata", "label": "Loft Metadata", "priority": 10},
         ],
+        "file-detail-reading": [
+            {"id": "comments", "label": "YouTube comments", "priority": 20},
+        ],
         "folder-actions-menu": [
             {"id": "media-import-url", "label": "Import from URL", "priority": 20},
         ],

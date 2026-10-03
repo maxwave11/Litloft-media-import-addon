@@ -98,6 +98,60 @@ export async function refreshLoft(
   if (!res.ok) throw new Error(`Error: ${res.status}`);
 }
 
+export interface LoftComment {
+  id: string;
+  author: string | null;
+  author_is_uploader: boolean;
+  is_pinned: boolean;
+  is_hearted: boolean;
+  text: string;
+  like_count: number | null;
+  published_at: string | null;
+  replies: LoftComment[];
+}
+
+export type CommentsState = "none" | "queued" | "ready" | "error";
+
+export type CommentsErrorKind =
+  | "rate_limited"
+  | "permanent"
+  | "disabled"
+  | "failed"
+  | null;
+
+export interface LoftComments {
+  supported: boolean;
+  state: CommentsState;
+  error_kind: CommentsErrorKind;
+  fetched_at: string | null;
+  total: number | null;
+  comments: LoftComment[];
+}
+
+export async function getLoftComments(
+  fileId: string,
+  drive: string,
+): Promise<LoftComments | null> {
+  const res = await fetch(`${BASE}/link/${fileId}/comments`, {
+    credentials: "include",
+    headers: driveHeaders(drive),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function refreshLoftComments(
+  fileId: string,
+  drive: string,
+): Promise<{ status: "queued" | "already_queued" }> {
+  const res = await fetch(`${BASE}/link/${fileId}/comments/refresh`, {
+    method: "POST",
+    credentials: "include",
+    headers: driveHeaders(drive),
+  });
+  return _json<{ status: "queued" | "already_queued" }>(res);
+}
+
 // ---- Subscriptions (Phase 2 Commit 5) ----
 
 export type SubscriptionKind =

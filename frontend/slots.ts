@@ -9,6 +9,7 @@ import "./players/registerMediaImportPlayers";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const slotComponents: Record<string, React.LazyExoticComponent<React.ComponentType<any>>> = {
   "loft-metadata": lazy(() => import("./LoftMetadataPanel")),
+  comments: lazy(() => import("./YouTubeComments")),
   "media-import-url": lazy(() => import("./ImportFromUrlMenuItem")),
   "loft-refresh": lazy(() => import("./LoftRefreshMenuItem")),
 };

@@ -100,6 +100,34 @@
         "error": "Failed to queue speech-to-text"
       }
     },
+    "comments": {
+      "title": "YouTube comments",
+      "countOfTotal": "{count} of {total} comments",
+      "countOnly": "{count, plural, one {# comment} other {# comments}}",
+      "fetchedOn": "loaded {date}",
+      "mostLiked": "most liked first",
+      "copy": "Copy",
+      "copied": "Comments copied",
+      "copyFailed": "Could not copy the comments",
+      "refresh": "Refresh",
+      "load": "Load comments",
+      "notLoaded": "The comments have not been loaded yet.",
+      "loading": "Loading comments…",
+      "empty": "No comments.",
+      "showAll": "Show all {count}",
+      "replies": "{count, plural, one {# reply} other {# replies}}",
+      "author": "Author",
+      "pinned": "Pinned",
+      "heartedByAuthor": "Liked by the video's author",
+      "likes": "{count, plural, one {# like} other {# likes}}",
+      "requestFailed": "Could not start loading the comments",
+      "error": {
+        "rate_limited": "YouTube is limiting requests right now. Try again later.",
+        "permanent": "This video is unavailable, so its comments cannot be read.",
+        "disabled": "Comments are turned off or unavailable for this video.",
+        "failed": "The comments could not be loaded."
+      }
+    },
     "dashboard": {
       "filter": {
         "all": "All",

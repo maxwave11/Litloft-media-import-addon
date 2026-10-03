@@ -100,6 +100,34 @@
         "error": "文字起こしのキュー投入に失敗しました"
       }
     },
+    "comments": {
+      "title": "YouTubeのコメント",
+      "countOfTotal": "{total}件中{count}件のコメント",
+      "countOnly": "{count}件のコメント",
+      "fetchedOn": "{date}に取得",
+      "mostLiked": "高評価順",
+      "copy": "コピー",
+      "copied": "コメントをコピーしました",
+      "copyFailed": "コメントをコピーできませんでした",
+      "refresh": "更新",
+      "load": "コメントを読み込む",
+      "notLoaded": "コメントはまだ読み込まれていません。",
+      "loading": "コメントを読み込み中…",
+      "empty": "コメントはありません。",
+      "showAll": "{count}件すべて表示",
+      "replies": "{count, plural, other {#件の返信}}",
+      "author": "投稿者",
+      "pinned": "固定",
+      "heartedByAuthor": "投稿者がハートを付けました",
+      "likes": "{count, plural, other {#件の高評価}}",
+      "requestFailed": "コメントの読み込みを開始できませんでした",
+      "error": {
+        "rate_limited": "YouTubeがリクエストを制限しています。しばらくしてからお試しください。",
+        "permanent": "この動画は利用できないため、コメントを取得できません。",
+        "disabled": "この動画のコメントは無効、または利用できません。",
+        "failed": "コメントを読み込めませんでした。"
+      }
+    },
     "dashboard": {
       "filter": {
         "all": "すべて",
