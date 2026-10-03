@@ -1105,12 +1105,6 @@ class LoftManager:
             limit = comments_limit()
             try:
                 result = fetch_comments_sync(item.url, max_roots=limit)
-            except Exception as exc:
-                logger.warning("Failed to fetch comments for %s: %s", item.url, exc)
-                record_failure(
-                    db, item.file_id, _classify_caption_error(str(exc)) or "failed"
-                )
-            else:
                 if result.comments is None:
                     record_failure(db, item.file_id, "disabled")
                 else:
@@ -1118,6 +1112,18 @@ class LoftManager:
                         result.comments, channel_id=result.channel_id, max_roots=limit
                     )
                     replace_snapshot(db, item.file_id, rows, result.total)
+            except Exception as exc:
+                logger.warning("Failed to fetch comments for %s: %s", item.url, exc)
+                try:
+                    record_failure(
+                        db, item.file_id, _classify_caption_error(str(exc)) or "failed"
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not record the comments failure for %s",
+                        item.file_id,
+                        exc_info=True,
+                    )
 
             event_hooks.emit_sync(
                 "files.updated", {"file_ids": [item.file_id]}, drives=[item.drive]

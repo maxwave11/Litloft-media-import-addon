@@ -28,6 +28,7 @@ def _seed(
     drive: str = DRIVE,
     mime: str = _LOFT_MIME,
     trashed: bool = False,
+    missing: bool = False,
     with_metadata: bool = True,
 ) -> None:
     from app.models import File
@@ -46,6 +47,7 @@ def _seed(
                 file_type="video",
                 mime_type=mime,
                 deleted_at=datetime.now(UTC) if trashed else None,
+                missing_since=datetime.now(UTC) if missing else None,
             )
         )
         db.commit()
@@ -232,6 +234,50 @@ class TestFetchAndStore:
         assert _stored(media_import_db) == {}
         assert _status(media_import_db) == (1, 0, None)
 
+    @pytest.mark.parametrize(
+        ("broken", "error"),
+        [
+            ("map_comments", RuntimeError("bad comment shape")),
+            ("replace_snapshot", RuntimeError("database is locked")),
+            ("replace_snapshot", LookupError("no loft_metadata row")),
+        ],
+    )
+    def test_a_failure_while_storing_is_recorded_not_lost(
+        self, media_import_db, monkeypatch, emitted, broken, error
+    ) -> None:
+        _seed(media_import_db)
+        _fetch_returns(
+            monkeypatch,
+            CommentsResult(comments=[_raw("old")], total=5, channel_id=None),
+        )
+        manager = LoftManager()
+        manager._fetch_and_store_comments(_item())
+        emitted.clear()
+
+        def _boom(*_a, **_kw):
+            raise error
+
+        monkeypatch.setattr(service, broken, _boom)
+        manager._fetch_and_store_comments(_item())
+
+        assert set(_stored(media_import_db)) == {"old"}
+        assert _status(media_import_db) == (1, 5, "failed")
+        assert emitted == [("files.updated", {"file_ids": [FILE_ID]}, [DRIVE])]
+
+    def test_failing_to_record_a_failure_still_lets_the_page_know(
+        self, media_import_db, monkeypatch, emitted
+    ) -> None:
+        _seed(media_import_db)
+        _fetch_raises(monkeypatch, "Sign in to confirm you're not a bot")
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(service, "record_failure", _boom)
+        LoftManager()._fetch_and_store_comments(_item())
+
+        assert emitted == [("files.updated", {"file_ids": [FILE_ID]}, [DRIVE])]
+
     def test_without_a_metadata_row_youtube_is_not_asked(
         self, media_import_db, monkeypatch, emitted
     ) -> None:
@@ -270,6 +316,15 @@ class TestEnqueue:
         assert asyncio.run(_twice()) == ("queued", "already_queued")
         assert manager._comments_queue.qsize() == 1
 
+    def test_a_fetch_in_flight_counts_as_pending(self, media_import_db) -> None:
+        _seed(media_import_db)
+        manager = LoftManager()
+        manager._comments_items[FILE_ID] = _item(status="fetching")
+
+        assert manager.comments_pending(FILE_ID) is True
+        assert asyncio.run(manager.enqueue_comments(FILE_ID, DRIVE)) == "already_queued"
+        assert manager._comments_queue.qsize() == 0
+
     def test_pending_is_false_for_an_unknown_file(self) -> None:
         assert LoftManager().comments_pending("nobody") is False
 
@@ -278,6 +333,7 @@ class TestEnqueue:
         [
             ({"drive": "other"}, FileNotFoundError),
             ({"trashed": True}, FileNotFoundError),
+            ({"missing": True}, FileNotFoundError),
             ({"mime": "video/mp4"}, FileNotFoundError),
             ({"with_metadata": False}, ValueError),
             ({"provider": "vimeo", "url": VIMEO}, ValueError),

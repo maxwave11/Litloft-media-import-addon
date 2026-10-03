@@ -1498,5 +1498,5 @@ def test_no_import_path_of_a_subscription_asks_for_comments(
         subdb.start_fetch_all(sid)
         manager._sync_all_blocking(sid)
 
-    assert subdb.count_seen_item_ids(sid) >= 1
+    assert subdb.count_seen_item_ids(sid) == 2
     assert asked == []

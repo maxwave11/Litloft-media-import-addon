@@ -130,7 +130,11 @@ def test_schema_has_the_comment_table_and_status_columns(media_import_db) -> Non
         "published_at",
         "position",
     }
-    assert {"comments_fetched_at", "comments_total", "comments_error_kind"} <= meta_cols
+    assert {c for c in meta_cols if c.startswith("comments_")} == {
+        "comments_fetched_at",
+        "comments_total",
+        "comments_error_kind",
+    }
 
 
 def test_ensuring_the_schema_again_keeps_stored_comments(media_import_db) -> None:

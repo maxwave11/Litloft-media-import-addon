@@ -52,6 +52,7 @@ def test_total_is_read_before_the_comments_are_requested(ydl) -> None:
     assert "getcomments" not in first["opts"]
     assert second["opts"]["getcomments"] is True
     assert all(c["url"] == URL and c["download"] is False for c in ydl.calls)
+    assert all(c["opts"]["sleep_interval_requests"] == 1.0 for c in ydl.calls)
 
 
 def test_total_and_channel_come_from_the_page_not_the_comment_run(ydl) -> None:
