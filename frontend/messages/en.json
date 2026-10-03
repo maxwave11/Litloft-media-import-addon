@@ -114,6 +114,7 @@
       "notLoaded": "Comments haven't been loaded for this video.",
       "loadHint": "This can take a few minutes. You can leave the page; the comments will be here when it's done.",
       "tab": "Comments",
+      "exportSection": "YouTube comments",
       "tabCount": "Comments ({count})",
       "retry": "Try again",
       "loading": "Loading comments…",

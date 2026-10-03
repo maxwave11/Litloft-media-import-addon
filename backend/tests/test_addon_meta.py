@@ -12,6 +12,7 @@ def test_declares_exactly_these_slot_entries() -> None:
     assert declared == {
         "loft-metadata": ["loft-metadata"],
         "file-detail-reading": ["comments"],
+        "markdown-export-sections": ["comments-export"],
         "folder-actions-menu": ["media-import-url"],
         "file-actions-menu": ["loft-refresh"],
         "file-card-metadata": ["card-channel"],

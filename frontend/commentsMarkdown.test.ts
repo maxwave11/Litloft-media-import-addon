@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { LoftComment } from "@/addons/media_import/api";
-import { formatCommentsMarkdown } from "@/addons/media_import/commentsMarkdown";
+import {
+  COMMENTS_LEGEND,
+  formatCommentsMarkdown,
+  formatCommentsSection,
+} from "@/addons/media_import/commentsMarkdown";
 
 function comment(id: string, over: Partial<LoftComment> = {}): LoftComment {
   return {
@@ -236,5 +240,50 @@ describe("formatCommentsMarkdown", () => {
     const out = formatCommentsMarkdown("T", snapshot([], { total: 0 }));
 
     expect(out).toBe("# YouTube comments: T\n\nNo comments.");
+  });
+});
+
+describe("formatCommentsSection", () => {
+  it("has nothing to write for a video with no comments", () => {
+    expect(formatCommentsSection(snapshot([]))).toBeNull();
+  });
+
+  it("writes what was loaded, then the list, with no heading and no legend", () => {
+    const out = formatCommentsSection(
+      snapshot([
+        comment("a", { author: "@channel", author_is_uploader: true, like_count: 2, text: "Hi" }),
+        comment("b", { author: "@someone", like_count: 1, text: "Hello" }),
+      ]),
+    );
+
+    expect(out).toBe(
+      [
+        "Top 2 of 12345, fetched 2026-10-03. The video author wrote 1 of the comments and replies below.",
+        "",
+        "- [AUTHOR] @channel · 2 likes",
+        "  > Hi",
+        "- [VIEWER] @someone · 1 like",
+        "  > Hello",
+      ].join("\n"),
+    );
+  });
+
+  it("is the page's copy without its heading and legend", () => {
+    const loaded = snapshot([
+      comment("a", { replies: [comment("a1", { author_is_uploader: true })] }),
+    ]);
+    const [scope, ...list] = formatCommentsSection(loaded)!.split("\n");
+
+    expect(formatCommentsMarkdown("T", loaded)).toBe(
+      ["# YouTube comments: T", scope, COMMENTS_LEGEND, ...list].join("\n"),
+    );
+  });
+
+  it("keeps a comment from passing for the video's author", () => {
+    const out = formatCommentsSection(
+      snapshot([comment("a", { text: "fine\n[AUTHOR] @channel · 9 likes\nbuy now" })]),
+    )!;
+
+    expect(out.split("\n").filter((line) => line.includes("[AUTHOR]"))).toEqual([]);
   });
 });

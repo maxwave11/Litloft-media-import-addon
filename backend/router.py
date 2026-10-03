@@ -100,6 +100,9 @@ ADDON_META = {
         "file-detail-reading": [
             {"id": "comments", "label": "YouTube comments", "priority": 20},
         ],
+        "markdown-export-sections": [
+            {"id": "comments-export", "label": "YouTube comments", "priority": 20},
+        ],
         "folder-actions-menu": [
             {"id": "media-import-url", "label": "Import from URL", "priority": 20},
         ],
