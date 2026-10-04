@@ -42,6 +42,7 @@ describe("LoadCommentsAction", () => {
     expect(action()).toMatchObject({
       id: "media_import.comments-load",
       label: "Load comments",
+      status: undefined,
       disabled: false,
     });
     expect(loadMissingComments).not.toHaveBeenCalled();
@@ -55,7 +56,7 @@ describe("LoadCommentsAction", () => {
 
     expect(loadMissingComments).toHaveBeenCalledTimes(1);
     expect(loadMissingComments).toHaveBeenCalledWith(["a", "c", "d"], "d");
-    expect(action()).toMatchObject({ label: "Loading started (2)", disabled: true });
+    expect(action()).toMatchObject({ status: "Loading started (2)", disabled: true });
   });
 
   it("says there is nothing to load when the server queued none", async () => {
@@ -64,7 +65,7 @@ describe("LoadCommentsAction", () => {
 
     await press(action);
 
-    expect(action()).toMatchObject({ label: "Nothing to load", disabled: true });
+    expect(action()).toMatchObject({ status: "Nothing to load", disabled: true });
   });
 
   it("says so without a request when the selection holds no .loft", async () => {
@@ -73,7 +74,7 @@ describe("LoadCommentsAction", () => {
     await press(action);
 
     expect(loadMissingComments).not.toHaveBeenCalled();
-    expect(action()).toMatchObject({ label: "Nothing to load", disabled: true });
+    expect(action()).toMatchObject({ status: "Nothing to load", disabled: true });
   });
 
   it("stays pressable after a failure, and asks again", async () => {
@@ -82,11 +83,11 @@ describe("LoadCommentsAction", () => {
     const { action } = mount([file("a")]);
 
     await press(action);
-    expect(action()).toMatchObject({ label: "Couldn't start", disabled: false });
+    expect(action()).toMatchObject({ status: "Couldn't start", disabled: false });
 
     await press(action);
     expect(loadMissingComments).toHaveBeenCalledTimes(2);
-    expect(action()).toMatchObject({ label: "Loading started (1)", disabled: true });
+    expect(action()).toMatchObject({ status: "Loading started (1)", disabled: true });
   });
 
   it("is disabled while the request is in flight", async () => {
@@ -98,7 +99,7 @@ describe("LoadCommentsAction", () => {
     expect(action().disabled).toBe(true);
 
     await act(async () => finish({ queued: 1, skipped: 0 }));
-    expect(action().label).toBe("Loading started (1)");
+    expect(action().status).toBe("Loading started (1)");
   });
 
   it("returns to ready when the selection changes", async () => {
@@ -109,7 +110,7 @@ describe("LoadCommentsAction", () => {
 
     rerender([file("a"), file("b")]);
 
-    expect(action()).toMatchObject({ label: "Load comments", disabled: false });
+    expect(action()).toMatchObject({ label: "Load comments", status: undefined, disabled: false });
   });
 
   it("drops the answer to a request the selection has moved on from", async () => {
@@ -121,7 +122,7 @@ describe("LoadCommentsAction", () => {
     rerender([file("b")]);
     await act(async () => finish({ queued: 1, skipped: 0 }));
 
-    expect(action()).toMatchObject({ label: "Load comments", disabled: false });
+    expect(action()).toMatchObject({ label: "Load comments", status: undefined, disabled: false });
   });
 
   it("does not report a failure to a selection that was never pressed", async () => {
@@ -137,7 +138,7 @@ describe("LoadCommentsAction", () => {
       fail(new Error("HTTP 500"));
     });
 
-    expect(action()).toMatchObject({ label: "Load comments", disabled: false });
+    expect(action()).toMatchObject({ label: "Load comments", status: undefined, disabled: false });
   });
 
   it("splits a large selection into requests of at most 1000 and adds the answers", async () => {
@@ -149,6 +150,6 @@ describe("LoadCommentsAction", () => {
     await press(action);
 
     expect(loadMissingComments.mock.calls.map(([ids]) => ids.length)).toEqual([1000, 50]);
-    expect(action().label).toBe("Loading started (950)");
+    expect(action().status).toBe("Loading started (950)");
   });
 });

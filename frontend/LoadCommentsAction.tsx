@@ -58,18 +58,19 @@ export default function LoadCommentsAction({
     }
   }
 
-  const label =
+  const status =
     state.kind === "started"
       ? t("started", { count: state.count })
       : state.kind === "nothing"
         ? t("nothing")
         : state.kind === "failed"
           ? t("failed")
-          : t("load");
+          : undefined;
 
   useOfferSelectionAction({
     id: "media_import.comments-load",
-    label,
+    label: t("load"),
+    status,
     icon: MessagesSquare,
     order: 20,
     disabled: state.kind !== "idle" && state.kind !== "failed",
