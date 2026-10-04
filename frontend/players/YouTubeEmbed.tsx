@@ -28,6 +28,7 @@ import { PlayerUiToggle } from "./PlayerUiToggle";
 const YT_STATE_ENDED = 0;
 const YT_STATE_PLAYING = 1;
 const YT_STATE_BUFFERING = 3;
+const AUTOPLAY_SOUND_GRACE_MS = 1000;
 
 // YouTube sizes its cued picture and its zoom from the iframe's own box, so
 // a screen that is not 16:9 must not become that box.
@@ -102,6 +103,7 @@ export default function YouTubeEmbed({
   url,
   onMediaController,
   initialTime,
+  autoPlay,
   durationHint,
   onEnded,
   mediaSessionMetadata,
@@ -221,7 +223,7 @@ export default function YouTubeEmbed({
   // outranks stored progress. Read during render rather than through a
   // dependency — the ref is written in the teardown of the previous
   // player, and this render is the one the new controller triggers.
-  const { notifyEnded } = usePlaybackProgress({
+  const { notifyEnded, notifyReady } = usePlaybackProgress({
     mc: activeMc,
     fileId,
     initialTime: carriedAt ?? initialTime,
@@ -230,6 +232,42 @@ export default function YouTubeEmbed({
   // with the controller, and the controller is what that effect builds.
   const notifyEndedRef = useRef(notifyEnded);
   notifyEndedRef.current = notifyEnded;
+
+  const autoPlayRef = useRef(autoPlay);
+  autoPlayRef.current = autoPlay;
+
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!activeMc || !player || !autoPlayRef.current) return;
+    let cancelled = false;
+    let fallback: ReturnType<typeof setTimeout> | undefined;
+    void notifyReady().then(() => {
+      if (cancelled) return;
+      try {
+        player.playVideo();
+      } catch {
+        return;
+      }
+      // The browser refuses sound until the viewer has interacted with the
+      // page, and a link opened from another app arrives without that.
+      // Muted playback is always allowed, so fall back to it.
+      fallback = setTimeout(() => {
+        if (cancelled) return;
+        try {
+          const state = player.getPlayerState();
+          if (state === YT_STATE_PLAYING || state === YT_STATE_BUFFERING) return;
+          player.mute();
+          player.playVideo();
+        } catch {
+          // Player torn down in the meantime.
+        }
+      }, AUTOPLAY_SOUND_GRACE_MS);
+    });
+    return () => {
+      cancelled = true;
+      clearTimeout(fallback);
+    };
+  }, [activeMc, notifyReady]);
 
   useEffect(() => {
     if (!activeMc || !mediaSessionMetadata) return;

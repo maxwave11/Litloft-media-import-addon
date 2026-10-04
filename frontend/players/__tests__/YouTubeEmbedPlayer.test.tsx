@@ -1049,3 +1049,59 @@ describe("YouTubeEmbed embedding-restricted fallback", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("YouTubeEmbed autoplay", () => {
+  const YT_STATE_CUED = 5;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  async function mountAutoplaying(autoPlay: boolean) {
+    render(
+      <YouTubeEmbed
+        fileId="abc123456789"
+        url={URL_UNDER_TEST}
+        durationHint={600}
+        initialTime={120}
+        autoPlay={autoPlay}
+      />,
+    );
+    await waitFor(() => expect(lastOptions).not.toBeNull());
+    await act(async () => {
+      await lastOptions!.events.onReady({ target: player });
+    });
+  }
+
+  it("starts playback after landing on the requested moment", async () => {
+    await mountAutoplaying(true);
+
+    await waitFor(() => expect(player.playVideo).toHaveBeenCalled());
+    expect(player.seekTo).toHaveBeenCalledWith(120, true);
+    expect(player.seekTo.mock.invocationCallOrder[0]).toBeLessThan(
+      player.playVideo.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("retries muted when the browser refuses to start it with sound", async () => {
+    player.getPlayerState.mockReturnValue(YT_STATE_CUED);
+    await mountAutoplaying(true);
+
+    await waitFor(() => expect(player.mute).toHaveBeenCalledTimes(1), {
+      timeout: 2500,
+    });
+    expect(player.playVideo).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the sound when playback started", async () => {
+    await mountAutoplaying(true);
+    await act(() => sleep(1300));
+
+    expect(player.mute).not.toHaveBeenCalled();
+  });
+
+  it("does not start on its own when not asked to", async () => {
+    await mountAutoplaying(false);
+    await act(() => sleep(1300));
+
+    expect(player.seekTo).toHaveBeenCalledWith(120, true);
+    expect(player.playVideo).not.toHaveBeenCalled();
+  });
+});
