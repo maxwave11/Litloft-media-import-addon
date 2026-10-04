@@ -725,7 +725,14 @@ async def get_subscription_avatar(
     the UI falls back to a generic avatar — this is the same
     "absence reads as None" semantic the rest of the addon uses.
     """
-    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    # An <img> cannot send X-Lit-Drive, so the header is optional here; the
+    # row's own drive is still checked against the caller's unlocked groups.
+    row = _load_subscription_row(subscription_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    scoped = (
+        _scoped_drive(x_lit_drive, unlocked_groups) if x_lit_drive else row["drive"]
+    )
     _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     path = subscription_avatar_path(subscription_id)
     if not path.exists():

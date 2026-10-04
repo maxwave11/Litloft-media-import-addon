@@ -1209,6 +1209,29 @@ class TestSummary:
         assert body["total"] == 1  # other-drive sub excluded
 
 
+class TestAvatarEndpoint:
+    def test_served_without_drive_header_like_an_img_tag(
+        self, client, fake_provider: _FakeProvider, tmp_path
+    ) -> None:
+        sub_id = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        ).json()["id"]
+        avatar = tmp_path / "a.jpg"
+        avatar.write_bytes(b"\xff\xd8\xff\xd9")
+
+        with patch(
+            "addons.media_import.router.subscription_avatar_path",
+            return_value=avatar,
+        ):
+            res = client.get(
+                f"/api/addons/media_import/subscriptions/{sub_id}/avatar",
+                headers={"X-Lit-Drive": ""},
+            )
+        assert res.status_code == 200
+        assert res.content == b"\xff\xd8\xff\xd9"
+
+
 class TestRefreshMetadata:
     def test_provider_returns_metadata_persists_to_db(
         self, client, media_import_db, fake_provider: _FakeProvider
