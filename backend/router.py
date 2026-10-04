@@ -31,10 +31,13 @@ from sqlalchemy import bindparam, text
 import app.config as config
 from app.auth import check_drive_access, get_unlocked_groups, get_viewer_id
 from app.database import SessionLocal
+from app.services import event_hooks
 
 from .schemas import (
     CardMetadataRequest,
     ActivityEntry,
+    LoadMissingCommentsRequest,
+    LoadMissingCommentsResponse,
     LoftCommentsResponse,
     LoftCreateRequest,
     LoftCreateResponse,
@@ -105,6 +108,9 @@ ADDON_META = {
         ],
         "folder-actions-menu": [
             {"id": "media-import-url", "label": "Import from URL", "priority": 20},
+        ],
+        "selection-bar-actions": [
+            {"id": "comments-load", "label": "Load comments", "priority": 20},
         ],
         "file-actions-menu": [
             {"id": "loft-refresh", "label": "Refresh metadata", "priority": 20},
@@ -357,6 +363,21 @@ async def refresh_loft_comments(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"status": status}
+
+
+@router.post("/link/comments/load-missing", status_code=202, response_model=LoadMissingCommentsResponse)
+async def load_missing_comments(
+    body: LoadMissingCommentsRequest,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> LoadMissingCommentsResponse:
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    queued = await loft_manager.enqueue_missing_comments(body.file_ids, scoped)
+    if queued:
+        await event_hooks.emit("files.updated", {"file_ids": queued}, drives=[scoped])
+    return LoadMissingCommentsResponse(
+        queued=len(queued), skipped=len(set(body.file_ids)) - len(queued)
+    )
 
 
 @router.post("/link/{file_id}/stt")

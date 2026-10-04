@@ -17,12 +17,12 @@ from pathlib import Path
 
 import app.config as config
 from app.database import SessionLocal
-from app.models import File
+from app.models import File, active_file_filter
 from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.services import event_hooks
 
@@ -775,6 +775,53 @@ class LoftManager:
         self._comments_items[file_id] = item
         await self._comments_queue.put(file_id)
         return "queued"
+
+    async def enqueue_missing_comments(self, file_ids: list[str], drive: str) -> list[str]:
+        """Queue the YouTube .loft files among ``file_ids`` that hold no comment set.
+
+        Returns the ids actually queued, in the order given. Anything else
+        (other drive, trashed, missing, not YouTube, already stored or queued)
+        is left out without telling the caller which.
+        """
+        wanted = list(dict.fromkeys(file_ids))
+        db = SessionLocal()
+        try:
+            loft_ids = {
+                row[0]
+                for row in db.query(File.id)
+                .filter(
+                    File.drive == drive,
+                    File.id.in_(wanted),
+                    File.mime_type == _LOFT_MIME,
+                    active_file_filter(),
+                )
+                .all()
+            }
+            if not loft_ids:
+                return []
+            statement = text(
+                "SELECT file_id, url FROM loft_metadata "
+                "WHERE file_id IN :ids AND comments_fetched_at IS NULL"
+            ).bindparams(bindparam("ids", expanding=True))
+            urls = {
+                row["file_id"]: row["url"]
+                for row in db.execute(statement, {"ids": list(loft_ids)}).mappings()
+            }
+        finally:
+            db.close()
+
+        queued: list[str] = []
+        for file_id in wanted:
+            url = urls.get(file_id)
+            if not url or not supports_comments(url):
+                continue
+            try:
+                status = await self.enqueue_comments(file_id, drive)
+            except (FileNotFoundError, ValueError):
+                continue
+            if status == "queued":
+                queued.append(file_id)
+        return queued
 
     async def _worker(self) -> None:
         while True:

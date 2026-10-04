@@ -131,6 +131,12 @@
         "permanent": "This video is unavailable, so its comments cannot be read.",
         "disabled": "Comments are turned off or unavailable for this video.",
         "failed": "The comments could not be loaded."
+      },
+      "bulk": {
+        "load": "Load comments",
+        "started": "Loading started ({count})",
+        "nothing": "Nothing to load",
+        "failed": "Couldn't start"
       }
     },
     "dashboard": {

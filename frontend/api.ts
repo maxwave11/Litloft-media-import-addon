@@ -152,6 +152,19 @@ export async function refreshLoftComments(
   return _json<{ status: "queued" | "already_queued" }>(res);
 }
 
+export async function loadMissingComments(
+  fileIds: string[],
+  drive: string,
+): Promise<{ queued: number; skipped: number }> {
+  const res = await fetch(`${BASE}/link/comments/load-missing`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...driveHeaders(drive) },
+    body: JSON.stringify({ file_ids: fileIds }),
+  });
+  return _json<{ queued: number; skipped: number }>(res);
+}
+
 // ---- Subscriptions (Phase 2 Commit 5) ----
 
 export type SubscriptionKind =

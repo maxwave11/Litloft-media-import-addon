@@ -13,6 +13,7 @@ export const slotComponents: Record<string, React.LazyExoticComponent<React.Comp
   "loft-metadata": lazy(() => import("./LoftMetadataPanel")),
   comments: lazy(() => import("./YouTubeComments")),
   "comments-export": lazy(() => import("./CommentsExportSection")),
+  "comments-load": lazy(() => import("./LoadCommentsAction")),
   "media-import-url": lazy(() => import("./ImportFromUrlMenuItem")),
   "loft-refresh": lazy(() => import("./LoftRefreshMenuItem")),
 };

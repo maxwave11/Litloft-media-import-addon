@@ -16,6 +16,15 @@ class CardMetadataRequest(BaseModel):
     file_ids: list[str] = Field(min_length=1, max_length=100)
 
 
+class LoadMissingCommentsRequest(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+class LoadMissingCommentsResponse(BaseModel):
+    queued: int
+    skipped: int
+
+
 class LoftCreateResponse(BaseModel):
     file_id: str
     filename: str
