@@ -197,6 +197,31 @@ def test_queues_in_the_order_given_and_counts_a_repeated_id_once(
     ]
 
 
+def test_a_video_that_stops_qualifying_mid_batch_is_skipped_not_fatal(
+    client, media_import_db, manager, emitted, monkeypatch
+) -> None:
+    for file_id in ("fvideo0000a", "fvideo0000b", "fvideo0000c"):
+        _seed(media_import_db, file_id, Video())
+    original = manager._load_comments_item
+    refused = {"fvideo0000a": FileNotFoundError, "fvideo0000b": ValueError}
+
+    def _refuse(file_id: str, drive: str):
+        if file_id in refused:
+            raise refused[file_id](file_id)
+        return original(file_id, drive)
+
+    monkeypatch.setattr(manager, "_load_comments_item", _refuse)
+
+    res = client.post(
+        URL, json={"file_ids": ["fvideo0000a", "fvideo0000b", "fvideo0000c"]}
+    )
+
+    assert res.status_code == 202
+    assert res.json() == {"queued": 1, "skipped": 2}
+    assert _queue_ids(manager) == ["fvideo0000c"]
+    assert emitted == [("files.updated", {"file_ids": ["fvideo0000c"]}, [DRIVE])]
+
+
 def test_a_second_press_queues_nothing_more(client, media_import_db, manager, emitted) -> None:
     _seed(media_import_db, "fvideo00001", Video())
 

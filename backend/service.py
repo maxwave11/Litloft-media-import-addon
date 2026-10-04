@@ -818,6 +818,8 @@ class LoftManager:
             try:
                 status = await self.enqueue_comments(file_id, drive)
             except (FileNotFoundError, ValueError):
+                # The row can change between the read above and the check
+                # enqueue_comments makes for itself.
                 continue
             if status == "queued":
                 queued.append(file_id)

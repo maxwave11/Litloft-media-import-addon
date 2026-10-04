@@ -26,7 +26,9 @@ async function press(action: () => { run: () => void }) {
   });
 }
 
-beforeEach(() => loadMissingComments.mockReset());
+beforeEach(() => {
+  loadMissingComments.mockReset();
+});
 
 afterEach(() => {
   cleanup();
@@ -118,6 +120,22 @@ describe("LoadCommentsAction", () => {
 
     rerender([file("b")]);
     await act(async () => finish({ queued: 1, skipped: 0 }));
+
+    expect(action()).toMatchObject({ label: "Load comments", disabled: false });
+  });
+
+  it("does not report a failure to a selection that was never pressed", async () => {
+    let fail: (reason: Error) => void = () => {};
+    loadMissingComments.mockImplementation(
+      () => new Promise((_resolve, reject) => { fail = reject; }),
+    );
+    const { action, rerender } = mount([file("a")]);
+    await press(action);
+
+    rerender([file("b")]);
+    await act(async () => {
+      fail(new Error("HTTP 500"));
+    });
 
     expect(action()).toMatchObject({ label: "Load comments", disabled: false });
   });
