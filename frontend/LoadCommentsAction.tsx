@@ -21,15 +21,20 @@ type State =
 export default function LoadCommentsAction({
   drive,
   files,
+  selectedIds,
 }: {
   drive: string;
   files: readonly FileItem[];
+  selectedIds: readonly string[];
 }) {
   const t = useTranslations("mediaImport.comments.bulk");
   const [state, setState] = useState<State>({ kind: "idle" });
   const press = useRef(0);
 
-  const selection = files.map((file) => file.id).join(",");
+  // `files` is what the list has loaded and is emptied while it refetches,
+  // which a press itself triggers; only the selected ids say what is selected.
+  const selection = selectedIds.join(",");
+  const loaded = files.length >= selectedIds.length;
   useEffect(() => {
     press.current += 1;
     setState({ kind: "idle" });
@@ -73,7 +78,7 @@ export default function LoadCommentsAction({
     status,
     icon: MessagesSquare,
     order: 20,
-    disabled: state.kind !== "idle" && state.kind !== "failed",
+    disabled: !loaded || (state.kind !== "idle" && state.kind !== "failed"),
     run: () => void run(),
   });
 

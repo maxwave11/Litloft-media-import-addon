@@ -12,11 +12,16 @@ import type { FileItem } from "@/types";
 const file = (id: string, filename = `${id}.loft`) => ({ id, filename }) as FileItem;
 
 function mount(files: FileItem[]) {
-  const view = render(<LoadCommentsAction drive="d" files={files} />);
+  const view = render(
+    <LoadCommentsAction drive="d" files={files} selectedIds={files.map((f) => f.id)} />,
+  );
   const { result } = renderHook(() => useSelectionActions());
   return {
     action: () => result.current[0],
-    rerender: (next: FileItem[]) => view.rerender(<LoadCommentsAction drive="d" files={next} />),
+    rerender: (next: FileItem[]) =>
+      view.rerender(
+        <LoadCommentsAction drive="d" files={next} selectedIds={next.map((f) => f.id)} />,
+      ),
   };
 }
 
