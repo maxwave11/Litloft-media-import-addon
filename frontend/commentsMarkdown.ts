@@ -73,8 +73,15 @@ function item(comment: LoftComment, indent: string): string[] {
   return lines;
 }
 
-function body(snapshot: CommentsSnapshot): string[] {
-  return snapshot.comments.flatMap((comment) => item(comment, ""));
+function body(comments: LoftComment[]): string[] {
+  return comments.flatMap((comment) => item(comment, ""));
+}
+
+function pinnedThenMostLiked(comments: LoftComment[]): LoftComment[] {
+  return [...comments].sort(
+    (a, b) =>
+      Number(b.is_pinned) - Number(a.is_pinned) || (b.like_count ?? -1) - (a.like_count ?? -1),
+  );
 }
 
 export function formatCommentsMarkdown(
@@ -84,15 +91,16 @@ export function formatCommentsMarkdown(
   const name = oneLine(title);
   const heading = name ? `# YouTube comments: ${name}` : "# YouTube comments";
   if (snapshot.comments.length === 0) return `${heading}\n\nNo comments.`;
-  return [heading, scopeLine(snapshot), COMMENTS_LEGEND, "", ...body(snapshot)].join("\n");
+  return [heading, scopeLine(snapshot), COMMENTS_LEGEND, "", ...body(snapshot.comments)].join("\n");
 }
 
 /**
  * The comments as a section of a larger document: what was loaded, then the
- * list. No heading and no legend, which the document carries once; `null`
- * when there is nothing to write.
+ * list, pinned first and then by likes so a reader weighs them in that order.
+ * No heading and no legend, which the document carries once; `null` when there
+ * is nothing to write.
  */
 export function formatCommentsSection(snapshot: CommentsSnapshot): string | null {
   if (snapshot.comments.length === 0) return null;
-  return [scopeLine(snapshot), "", ...body(snapshot)].join("\n");
+  return [scopeLine(snapshot), "", ...body(pinnedThenMostLiked(snapshot.comments))].join("\n");
 }

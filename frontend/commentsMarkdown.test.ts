@@ -268,7 +268,71 @@ describe("formatCommentsSection", () => {
     );
   });
 
-  it("is the page's copy without its heading and legend", () => {
+  describe("order of the top-level comments", () => {
+    const names = (comments: LoftComment[]) =>
+      formatCommentsSection(snapshot(comments))!
+        .split("\n")
+        .filter((line) => line.startsWith("- "))
+        .map((line) => line.split(" ")[2]);
+
+    it.each<[string, LoftComment[], string[]]>([
+      [
+        "most-liked first",
+        [
+          comment("a", { author: "@low", like_count: 1 }),
+          comment("b", { author: "@high", like_count: 50 }),
+          comment("c", { author: "@mid", like_count: 7 }),
+        ],
+        ["@high", "@mid", "@low"],
+      ],
+      [
+        "a pinned comment before a more-liked one",
+        [
+          comment("a", { author: "@liked", like_count: 900 }),
+          comment("b", { author: "@pinned", like_count: 2, is_pinned: true }),
+        ],
+        ["@pinned", "@liked"],
+      ],
+      [
+        "an unknown count after a zero",
+        [
+          comment("a", { author: "@unknown", like_count: null }),
+          comment("b", { author: "@zero", like_count: 0 }),
+        ],
+        ["@zero", "@unknown"],
+      ],
+      [
+        "equal counts in stored order",
+        [
+          comment("a", { author: "@first", like_count: 4 }),
+          comment("b", { author: "@second", like_count: 4 }),
+          comment("c", { author: "@third", like_count: 4 }),
+        ],
+        ["@first", "@second", "@third"],
+      ],
+    ])("puts %s", (_name, comments, expected) => {
+      expect(names(comments)).toEqual(expected);
+    });
+
+    it("leaves replies in stored order even when a later one has more likes", () => {
+      const out = formatCommentsSection(
+        snapshot([
+          comment("a", {
+            author: "@parent",
+            like_count: 5,
+            replies: [
+              comment("a1", { author: "@early", like_count: 1 }),
+              comment("a2", { author: "@late", like_count: 99 }),
+            ],
+          }),
+        ]),
+      )!;
+
+      expect(out.indexOf("@early")).toBeLessThan(out.indexOf("@late"));
+    });
+  });
+
+  it("matches the page's copy apart from its heading, legend and the order", () => {
     const loaded = snapshot([
       comment("a", { replies: [comment("a1", { author_is_uploader: true })] }),
     ]);
