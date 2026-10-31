@@ -359,7 +359,10 @@ class SubscriptionManager:
             listing = getattr(provider, "list_channel_history", provider.list_items)
         else:
             listing = provider.list_items
-        headers = listing(ref, limit=backfill, include_shorts=include_shorts)
+        # Only a channel that opted out passes the flag, so a provider that
+        # has no Shorts never needs to accept it.
+        options = {} if include_shorts else {"include_shorts": False}
+        headers = listing(ref, limit=backfill, **options)
         listed = list(
             {h.item_id: _listing_columns(h) for h in headers}.values()
         )

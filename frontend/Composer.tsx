@@ -104,6 +104,7 @@ export default function Composer({
   const [expanded, setExpanded] = useState(initialExpanded);
   const [url, setUrl] = useState("");
   const [kind, setKind] = useState<SubscriptionKind>("unknown");
+  const [provider, setProvider] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
 
   const [selectedFolder, setSelectedFolder] = useState("");
@@ -136,6 +137,7 @@ export default function Composer({
     const trimmed = url.trim();
     if (!trimmed) {
       setKind("unknown");
+      setProvider(null);
       return;
     }
     if (!drive) return;
@@ -145,6 +147,7 @@ export default function Composer({
         .then((res) => {
           classified.current = { url: trimmed, kind: res.kind, provider: res.provider };
           setKind(res.kind);
+          setProvider(res.provider);
           if (selectedFolder === "") {
             const last = rememberedFolder(drive, res);
             if (last) {
@@ -155,6 +158,7 @@ export default function Composer({
         .catch(() => {
           classified.current = { url: trimmed, kind: "unknown", provider: null };
           setKind("unknown");
+          setProvider(null);
         })
         .finally(() => setResolving(false));
     }, 400);
@@ -211,6 +215,7 @@ export default function Composer({
       classified.current = null;
       setUrl("");
       setKind("unknown");
+      setProvider(null);
       onCreated();
       inputRef.current?.focus();
     } catch (e) {
