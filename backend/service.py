@@ -9,7 +9,9 @@ the addon adds its own subscription / import_jobs tables).
 import asyncio
 import json
 import logging
+import os
 import re
+import tempfile
 import unicodedata
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -22,6 +24,7 @@ from app.services.chapters import normalise_chapters, replace_chapters
 from app.services.hash import compute_file_hash
 from app.services.provider_registry import detect_provider
 from app.services.scanner import register_single_file
+from app.services.sidecar_match import match_siblings
 from sqlalchemy import bindparam, text
 
 from app.services import event_hooks
@@ -45,10 +48,34 @@ _STT_TEMP_MAX_AGE = timedelta(hours=24)
 
 
 def _sanitize_filename(title: str) -> str:
-    """Remove characters that are invalid in filenames."""
+    """Remove characters that are invalid in filenames.
+
+    Titles may arrive in NFD while the core stores NFC paths, so the name is
+    normalized before the cut, and a cut never leaves a mark NFC could not
+    compose without its base at the end.
+    """
+    title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
     title = title.strip(". ")
-    return title[:200] if title else "untitled"
+    # Linux file systems cap a name at 255 bytes, not characters; 200 leaves
+    # room for " (n)" and the longest sidecar suffix, ".stt_temp.<ext>.part".
+    if len(title) > 200 or len(title.encode()) > 200:
+        title = title[:200].encode()[:200].decode("utf-8", "ignore")
+        while title and unicodedata.combining(title[-1]):
+            title = title[:-1]
+    return title if title else "untitled"
+
+
+def _siblings(parent: Path, stem_name: str, rest_pattern: str) -> list[Path]:
+    """Files beside ``stem_name``; a folder that cannot be listed holds none."""
+    try:
+        return match_siblings(parent, stem_name, rest_pattern)
+    except OSError:
+        return []
+
+
+def _same_name(a: str, b: str) -> bool:
+    return unicodedata.normalize("NFC", a) == unicodedata.normalize("NFC", b)
 
 
 def _extract_title_sync(url: str) -> str:
@@ -221,50 +248,49 @@ def _download_captions_sync(
     import yt_dlp
 
     lang = language or "ja"
-    # Titles may contain dots (e.g. "Ver.3.0.2"); pathlib's suffix/stem
-    # would split on the wrong boundary, so operate on the raw name.
-    parent = output_stem.parent
-    stem_name = output_stem.name
-    vtt_path = parent / f"{stem_name}.vtt"
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "writeautomaticsub": True,
-        "writesubtitles": True,
-        "subtitlesformat": "vtt",
-        "subtitleslangs": [lang],
-        # %(ext)s avoids splitext on the template, which would mistake
-        # an embedded dot for the extension.
-        "outtmpl": str(parent / f"{stem_name}.%(ext)s"),
-    }
-    if strict:
-        ydl_opts.update(retries=0, extractor_retries=0, sleep_interval_requests=2.0, socket_timeout=30)
+    vtt_path = output_stem.parent / f"{output_stem.name}.vtt"
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except Exception as exc:
-        error_kind = _classify_caption_error(str(exc))
-        if strict and error_kind is None:
-            raise
-        return False, error_kind
-
-    candidates = sorted(parent.glob(f"{stem_name}.*.vtt"))
-    if not candidates:
+    # yt-dlp writes into a directory of its own so that whatever it leaves
+    # there is this run's file by construction. Looking for `<title>.*.vtt`
+    # beside the loft would also match another video's `<title>.<x>.vtt`.
+    if not output_stem.parent.is_dir():
         return False, None
 
-    best = candidates[0]
-    if best.name != vtt_path.name:
-        best.rename(vtt_path)
-        for c in candidates[1:]:
-            if c.exists() and c != vtt_path:
-                c.unlink()
+    # Beside the loft, not in /tmp: the move must be a rename on one
+    # filesystem, since a cross-device copy can truncate the target or fail
+    # after a complete copy. The leading dot keeps the scanner out of it.
+    with tempfile.TemporaryDirectory(
+        dir=output_stem.parent, prefix=".mi_captions_"
+    ) as scratch:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "writeautomaticsub": True,
+            "writesubtitles": True,
+            "subtitlesformat": "vtt",
+            "subtitleslangs": [lang],
+            "outtmpl": str(Path(scratch) / "captions.%(ext)s"),
+        }
+        if strict:
+            ydl_opts.update(retries=0, extractor_retries=0, sleep_interval_requests=2.0, socket_timeout=30)
 
-    if vtt_path.exists():
-        _dedup_rolling_vtt(vtt_path)
-        return True, None
-    return False, None
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as exc:
+            error_kind = _classify_caption_error(str(exc))
+            if strict and error_kind is None:
+                raise
+            return False, error_kind
+
+        produced = sorted(Path(scratch).glob("*.vtt"))
+        if not produced:
+            return False, None
+        os.replace(produced[0], vtt_path)
+
+    _dedup_rolling_vtt(vtt_path)
+    return True, None
 
 
 def _stt_temp_path(output_stem: Path) -> Path:
@@ -274,7 +300,7 @@ def _stt_temp_path(output_stem: Path) -> Path:
 def _cleanup_stt_temp(output_stem: Path) -> None:
     parent = output_stem.parent
     stem_name = output_stem.name
-    for path in parent.glob(f"{stem_name}.stt_temp.*"):
+    for path in _siblings(parent, stem_name, ".stt_temp.*"):
         try:
             if path.is_file():
                 path.unlink()
@@ -328,12 +354,12 @@ def _download_stt_audio_sync(url: str, output_stem: Path) -> Path:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        candidates = sorted(parent.glob(f"{stem_name}.stt_temp.*.part"))
+        candidates = _siblings(parent, stem_name, ".stt_temp.*.part")
         if not candidates:
-            candidates = sorted(parent.glob(f"{stem_name}.stt_temp.*"))
+            candidates = _siblings(parent, stem_name, ".stt_temp.*")
         candidates = [
             p for p in candidates
-            if p.is_file() and p.name != final_path.name
+            if p.is_file() and not _same_name(p.name, final_path.name)
         ]
         if not candidates:
             raise RuntimeError("yt-dlp did not produce STT audio")
@@ -390,7 +416,7 @@ def _cleanup_stale_stt_temp_files() -> int:
         try:
             loft_path = _resolve_drive_file_path(row["drive"], row["file_path"])
             output_stem = loft_path.with_suffix("")
-            candidates = list(output_stem.parent.glob(f"{output_stem.name}.stt_temp.*"))
+            candidates = _siblings(output_stem.parent, output_stem.name, ".stt_temp.*")
         except Exception:
             continue
         for path in candidates:
@@ -1459,15 +1485,75 @@ def _ensure_subscription_tables() -> None:
                     file_id TEXT REFERENCES files(id) ON DELETE SET NULL,
                     first_seen_at TEXT NOT NULL,
                     last_attempted_at TEXT,
+                    fail_count INTEGER NOT NULL DEFAULT 0,
+                    title TEXT,
+                    published_at TEXT,
                     PRIMARY KEY(subscription_id, item_id)
                 )
                 """
             )
         )
         db.commit()
+        _upgrade_subscription_videos(db.get_bind())
         logger.info("subscription tables ensured")
     finally:
         db.close()
+
+
+def _upgrade_subscription_videos(engine) -> None:
+    """Add the retry and title columns to a table created before them.
+
+    The install that gains ``fail_count`` also moves its legacy
+    ``fetch_failed`` / NULL failures to ``retry_pending`` once, so they
+    are retried rather than left needing attention. Column and move
+    share one transaction on the raw connection: the sqlite3 driver
+    opens its implicit transaction only before DML, so an ``ALTER TABLE``
+    through the session would commit on its own and survive a failed
+    move.
+    """
+    raw = engine.raw_connection()
+    try:
+        cur = raw.cursor()
+        columns = {
+            r[1] for r in cur.execute(
+                "PRAGMA table_info(subscription_videos)"
+            ).fetchall()
+        }
+        missing = [
+            (name, ddl) for name, ddl in (
+                ("fail_count", "fail_count INTEGER NOT NULL DEFAULT 0"),
+                ("title", "title TEXT"),
+                ("published_at", "published_at TEXT"),
+            )
+            if name not in columns
+        ]
+        if not missing:
+            return
+        try:
+            cur.execute("BEGIN")
+            for _, ddl in missing:
+                cur.execute(f"ALTER TABLE subscription_videos ADD COLUMN {ddl}")
+            moved = 0
+            if "fail_count" not in columns:
+                cur.execute(
+                    "UPDATE subscription_videos "
+                    "SET error_kind = 'retry_pending', fail_count = 0 "
+                    "WHERE status = 'failed' "
+                    " AND (error_kind = 'fetch_failed' OR error_kind IS NULL)"
+                )
+                moved = cur.rowcount
+            raw.commit()
+        except Exception:
+            raw.rollback()
+            logger.exception("subscription_videos upgrade rolled back")
+            raise
+        logger.info(
+            "subscription_videos upgraded: added %s, moved %d failed "
+            "row(s) to retry_pending",
+            ", ".join(name for name, _ in missing), moved,
+        )
+    finally:
+        raw.close()
 
 
 loft_manager = LoftManager()

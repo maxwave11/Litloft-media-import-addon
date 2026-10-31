@@ -41,8 +41,16 @@ from ..service import (
 )
 from . import db as subdb
 from .registry import (
+    ERROR_FETCH_FAILED,
+    ERROR_PERMANENT,
+    ERROR_RETRY_PENDING,
+    ERROR_UPCOMING,
     REF_KIND_CHANNEL,
     REF_KIND_VIDEO,
+    ItemHeader,
+    ItemNotStarted,
+    ItemRateLimited,
+    ItemUnavailable,
     SourceMetadata,
     TranscriptResult,
     SubscriptionProvider,
@@ -53,6 +61,15 @@ from .registry import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# An unclassified failure on this many attempts in a row needs the user.
+FAILURES_BEFORE_ATTENTION = 3
+
+_ADDED = "added"
+_REUSED = "reused"
+_FAILED = "failed"
+_RATE_LIMITED = "rate_limited"
 
 
 # ---- Public exceptions --------------------------------------------
@@ -98,10 +115,16 @@ def _resolve_channel_id_via_yt_dlp(url: str) -> str | None:
 def _sanitize_filename(title: str) -> str:
     """Mirror service.py — kept local to avoid a cross-module import cycle."""
     import re
+    import unicodedata
 
+    title = unicodedata.normalize("NFC", title)
     title = re.sub(r'[<>:"/\\|?*]', "_", title)
     title = title.strip(". ")
-    return title[:200] if title else "untitled"
+    if len(title) > 200 or len(title.encode()) > 200:
+        title = title[:200].encode()[:200].decode("utf-8", "ignore")
+        while title and unicodedata.combining(title[-1]):
+            title = title[:-1]
+    return title if title else "untitled"
 
 
 def _allocate_loft_path(
@@ -334,73 +357,79 @@ class SubscriptionManager:
         include_shorts = bool(sub.get("include_shorts", True))
         if history:
             listing = getattr(provider, "list_channel_history", provider.list_items)
-            headers = listing(
-                ref, limit=backfill, include_shorts=include_shorts
-            )
         else:
-            headers = provider.list_items(
-                ref, limit=backfill, include_shorts=include_shorts
-            )
-        upstream_ids = [h.item_id for h in headers]
+            listing = provider.list_items
+        headers = listing(ref, limit=backfill, include_shorts=include_shorts)
+        listed = list(
+            {h.item_id: _listing_columns(h) for h in headers}.values()
+        )
 
         seen = self._load_seen_item_ids(subscription_id)
-        new_ids = list(dict.fromkeys(iid for iid in upstream_ids if iid not in seen))
-        pending_count = len(new_ids)
-        if fetch_all:
-            new_ids = new_ids[:15]
-        elif new_limit is not None:
-            new_ids = new_ids[:new_limit]
+        try:
+            subdb.fill_listing_columns(
+                subscription_id, [r for r in listed if r[0] in seen]
+            )
+        except Exception:
+            logger.exception(
+                "Subscription %s: failed to store listing titles",
+                subscription_id,
+            )
+        # Retries belong to the scheduled sync; a history fetch or a
+        # backfill only reaches for what the subscription has not seen.
+        retry_rows = (
+            [] if fetch_all or new_limit is not None
+            else subdb.load_retry_set(subscription_id)
+        )
 
-        added = reused = failed = 0
         first_seen = datetime.now(UTC).isoformat()
-        for idx, item_id in enumerate(new_ids):
+        new_items = [r for r in listed if r[0] not in seen]
+        pending_count = len(new_items)
+        if fetch_all:
+            new_items = new_items[:15]
+        elif new_limit is not None:
+            new_items = new_items[:new_limit]
+        attempts = [
+            _Attempt(item_id, first_seen, 0, title, published_at, False)
+            for item_id, title, published_at in new_items
+        ] + [
+            _Attempt(
+                r["item_id"], r["first_seen_at"], r["fail_count"] or 0,
+                r["title"], None, True,
+            )
+            for r in retry_rows
+        ]
+
+        counts = {_ADDED: 0, _REUSED: 0, _FAILED: 0}
+        retried = 0
+        rate_limited = False
+        for idx, attempt in enumerate(attempts):
             if fetch_all:
                 current = self._load_subscription(subscription_id)
                 if current["fetch_all_status"] != "active" or not current["is_enabled"]:
-                    return {"added": added, "reused": reused, "failed": failed, "total_new": len(new_ids)}
-            try:
-                outcome = self._import_one_item(
-                    provider=provider,
-                    ref=ref,
-                    item_id=item_id,
-                    drive=sub["drive"],
-                    folder_path=sub["folder_path"],
-                    include_no_transcript=bool(sub["include_no_transcript"]),
-                    fetch_all=fetch_all,
-                )
-            except Exception:
-                logger.exception(
-                    "Subscription %s: failed to import %s",
-                    subscription_id, item_id,
-                )
-                self._record_video_safe(
-                    subscription_id, item_id, status="failed",
-                    file_id=None, first_seen=first_seen,
-                    error_kind="fetch_failed",
-                )
-                failed += 1
-                if fetch_all:
-                    raise RuntimeError("Channel fetch stopped after an item failed")
-                continue
-
-            self._record_video_safe(
-                subscription_id, item_id, status="imported",
-                file_id=outcome.file_id, first_seen=first_seen,
-                error_kind=outcome.transcript_error,
+                    return {
+                        "added": counts[_ADDED],
+                        "reused": counts[_REUSED],
+                        "failed": counts[_FAILED],
+                        "total_new": len(new_items),
+                        "retried": retried,
+                        "rate_limited": rate_limited,
+                    }
+            outcome = self._attempt_item(
+                subscription_id, sub, provider, ref, attempt,
+                fetch_all=fetch_all,
             )
-            if outcome.reused:
-                reused += 1
-            else:
-                added += 1
-
-            if fetch_all and outcome.transcript_error == "rate_limited":
-                raise RuntimeError("Channel fetch stopped after caption rate limiting")
-
-            # Throttle only between freshly-fetched items; reused items
-            # didn't hit the network.
+            if outcome == _RATE_LIMITED:
+                rate_limited = True
+                self._leave_for_next_sync(
+                    subscription_id, attempts[idx:], first_seen
+                )
+                break
+            counts[outcome] += 1
+            if attempt.from_retry_set:
+                retried += 1
             if (
-                not outcome.reused
-                and idx < len(new_ids) - 1
+                outcome != _REUSED
+                and idx < len(attempts) - 1
                 and provider.inter_item_delay_seconds > 0
             ):
                 time.sleep(max(8.0, provider.inter_item_delay_seconds) if fetch_all else provider.inter_item_delay_seconds)
@@ -419,10 +448,12 @@ class SubscriptionManager:
                 limit=backfill if pending_count > 15 else backfill + 15,
             )
         return {
-            "added": added,
-            "reused": reused,
-            "failed": failed,
-            "total_new": len(new_ids),
+            "added": counts[_ADDED],
+            "reused": counts[_REUSED],
+            "failed": counts[_FAILED],
+            "total_new": len(new_items),
+            "retried": retried,
+            "rate_limited": rate_limited,
         }
 
     def _sync_all_blocking(self, subscription_id: int) -> dict:
@@ -440,6 +471,35 @@ class SubscriptionManager:
             subscription_id, sub, provider, ref, sub["fetch_all_limit"], fetch_all=True,
         )
 
+    def _leave_for_next_sync(
+        self,
+        subscription_id: int,
+        remaining: list["_Attempt"],
+        first_seen: str,
+    ) -> None:
+        """Give every new item the stopped sync did not attempt a row,
+        so the next sync's retry set picks it up."""
+        unattempted = [
+            (a.item_id, a.title, a.published_at)
+            for a in remaining
+            if not a.from_retry_set
+        ]
+        logger.warning(
+            "Subscription %s: rate limited at item %s; stopping the sync "
+            "with %d item(s) left for the next sync",
+            subscription_id, remaining[0].item_id, len(remaining),
+        )
+        try:
+            subdb.insert_unattempted_rows(
+                subscription_id, unattempted, first_seen=first_seen
+            )
+        except Exception:
+            logger.exception(
+                "Subscription %s: failed to record items left for the "
+                "next sync",
+                subscription_id,
+            )
+
     def _sync_single_item(
         self, subscription_id, sub, provider, ref, item_id
     ) -> dict:
@@ -449,7 +509,41 @@ class SubscriptionManager:
             raise SubscriptionNotFound(
                 f"video not found: ({subscription_id}, {item_id})"
             )
-        first_seen = existing["first_seen_at"]
+        outcome = self._attempt_item(
+            subscription_id, sub, provider, ref,
+            _Attempt(
+                item_id, existing["first_seen_at"],
+                existing["fail_count"] or 0, existing["title"], None, True,
+            ),
+        )
+        imported = outcome in (_ADDED, _REUSED)
+        return {
+            "added": int(outcome == _ADDED),
+            "reused": int(outcome == _REUSED),
+            "failed": int(outcome == _FAILED),
+            "total_new": int(imported),
+            "retried": int(outcome != _RATE_LIMITED),
+            "rate_limited": outcome == _RATE_LIMITED,
+        }
+
+    def _attempt_item(
+        self, subscription_id, sub, provider, ref, attempt: "_Attempt",
+        *, fetch_all: bool = False,
+    ) -> str:
+        """Import one item and record the outcome on its row.
+
+        A rate-limited attempt records nothing. A failed attempt that
+        leaves the row without a title asks the provider for one.
+        """
+        item_id = attempt.item_id
+
+        def record(status, *, error_kind, fail_count, file_id=None):
+            self._record_video_safe(
+                subscription_id, item_id, status=status,
+                file_id=file_id, first_seen=attempt.first_seen,
+                error_kind=error_kind, fail_count=fail_count,
+                title=attempt.title, published_at=attempt.published_at,
+            )
 
         try:
             outcome = self._import_one_item(
@@ -459,30 +553,78 @@ class SubscriptionManager:
                 drive=sub["drive"],
                 folder_path=sub["folder_path"],
                 include_no_transcript=bool(sub["include_no_transcript"]),
+                fetch_all=fetch_all,
             )
+        except ItemRateLimited as exc:
+            logger.warning(
+                "Subscription %s: item %s rate limited: %s",
+                subscription_id, item_id, exc,
+            )
+            if fetch_all:
+                raise RuntimeError("Channel fetch stopped after rate limiting")
+            return _RATE_LIMITED
+        except (ItemUnavailable, ItemNotStarted) as exc:
+            kind = (
+                ERROR_PERMANENT if isinstance(exc, ItemUnavailable)
+                else ERROR_UPCOMING
+            )
+            logger.warning(
+                "Subscription %s: item %s is %s: %s",
+                subscription_id, item_id, kind, exc,
+            )
+            record("failed", error_kind=kind, fail_count=0)
         except Exception:
             logger.exception(
-                "Retry failed for subscription=%s item=%s",
+                "Subscription %s: failed to import %s",
                 subscription_id, item_id,
             )
-            self._record_video_safe(
-                subscription_id, item_id, status="failed",
-                file_id=None, first_seen=first_seen,
-                error_kind="fetch_failed",
+            fail_count = attempt.fail_count + 1
+            record(
+                "failed",
+                error_kind=(
+                    ERROR_FETCH_FAILED
+                    if fail_count >= FAILURES_BEFORE_ATTENTION
+                    else ERROR_RETRY_PENDING
+                ),
+                fail_count=fail_count,
             )
-            return {"added": 0, "reused": 0, "failed": 1, "total_new": 0}
+            if fetch_all:
+                raise RuntimeError("Channel fetch stopped after an item failed")
+        else:
+            record(
+                "imported", error_kind=outcome.transcript_error,
+                fail_count=0, file_id=outcome.file_id,
+            )
+            if fetch_all and outcome.transcript_error == "rate_limited":
+                raise RuntimeError("Channel fetch stopped after caption rate limiting")
+            return _REUSED if outcome.reused else _ADDED
 
-        self._record_video_safe(
-            subscription_id, item_id, status="imported",
-            file_id=outcome.file_id, first_seen=first_seen,
-            error_kind=outcome.transcript_error,
-        )
-        return {
-            "added": 0 if outcome.reused else 1,
-            "reused": 1 if outcome.reused else 0,
-            "failed": 0,
-            "total_new": 1,
-        }
+        if attempt.title is None:
+            self._fill_title_from_provider(
+                subscription_id, provider, ref, item_id
+            )
+        return _FAILED
+
+    def _fill_title_from_provider(
+        self, subscription_id, provider, ref, item_id
+    ) -> None:
+        try:
+            title = provider.fetch_item_title(ref, item_id)
+        except Exception as exc:
+            logger.info(
+                "Subscription %s: title lookup for %s failed: %s",
+                subscription_id, item_id, exc,
+            )
+            return
+        if not title or not title.strip():
+            return
+        try:
+            subdb.set_title_if_null(subscription_id, item_id, title)
+        except Exception:
+            logger.exception(
+                "Subscription %s: failed to store the title of %s",
+                subscription_id, item_id,
+            )
 
     # ---- purge already-imported Shorts ----------------------------
 
@@ -553,6 +695,9 @@ class SubscriptionManager:
         file_id: str | None,
         first_seen: str,
         error_kind: str | None = None,
+        fail_count: int = 0,
+        title: str | None = None,
+        published_at: str | None = None,
     ) -> None:
         """``upsert_video_row`` wrapper that swallows write errors.
 
@@ -568,6 +713,8 @@ class SubscriptionManager:
                 subscription_id, item_id,
                 status=status, file_id=file_id,
                 first_seen=first_seen, error_kind=error_kind,
+                fail_count=fail_count, title=title,
+                published_at=published_at,
             )
         except Exception:
             logger.exception(
@@ -735,6 +882,38 @@ class SubscriptionManager:
 
 
 # ---- _ImportOutcome -----------------------------------------------
+
+
+def _listing_columns(
+    header: ItemHeader,
+) -> tuple[str, str | None, str | None]:
+    title = header.title if header.title and header.title.strip() else None
+    return header.item_id, title, header.published_at
+
+
+class _Attempt:
+    """One item a sync is about to attempt, with the row state it starts from."""
+
+    __slots__ = (
+        "item_id", "first_seen", "fail_count", "title", "published_at",
+        "from_retry_set",
+    )
+
+    def __init__(
+        self,
+        item_id: str,
+        first_seen: str,
+        fail_count: int,
+        title: str | None,
+        published_at: str | None,
+        from_retry_set: bool,
+    ) -> None:
+        self.item_id = item_id
+        self.first_seen = first_seen
+        self.fail_count = fail_count
+        self.title = title
+        self.published_at = published_at
+        self.from_retry_set = from_retry_set
 
 
 class _ImportOutcome:

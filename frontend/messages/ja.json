@@ -222,6 +222,8 @@
         "loading": "読み込み中...",
         "empty": "アイテムがありません。同期を実行してください。",
         "groupAttention": "要対応 ({count})",
+        "groupRetrying": "再試行待ち ({count})",
+        "groupUnavailable": "取得不可 ({count})",
         "groupImported": "取り込み済み ({count})",
         "groupSkipped": "スキップ済み ({count})",
         "backfill": "さらに取り込む",
@@ -236,7 +238,8 @@
         "fetchAllCompleted": "チャンネル履歴の取得が完了しました。",
         "fetchAllError": "取得エラーまたはリクエスト制限により停止しました。取得済みの項目は保持されます。待機後に再試行してください。",
         "fetchAllCancelled": "取得を停止しました。取得済みの項目は保持されます。",
-        "fetchAllNext": "次の取得は {when} 以降です。"
+        "fetchAllNext": "次の取得は {when} 以降です。",
+        "rateLimited": "YouTube に一時的に制限されています。しばらくしてから再試行してください。"
       },
       "danger": {
         "heading": "危険な操作",
@@ -261,7 +264,8 @@
       "openFile": "ファイルを開く",
       "retry": "再試行",
       "dismiss": "無視",
-      "resolveConflict": "解決..."
+      "resolveConflict": "解決...",
+      "openSource": "元のページを開く"
     },
     "errorKind": {
       "rate_limited": {
@@ -270,7 +274,7 @@
       },
       "permanent": {
         "label": "取得不可",
-        "hint": "非公開・削除・地域制限の可能性があります。"
+        "hint": "メンバー限定・年齢制限・非公開・削除などで取得できません。"
       },
       "path_conflict": {
         "label": "パス競合",
@@ -291,6 +295,14 @@
       "unknown": {
         "label": "失敗",
         "hint": "原因不明のエラーです。再試行してください。"
+      },
+      "retry_pending": {
+        "label": "再試行待ち",
+        "hint": "次回の同期で自動的に再試行します。"
+      },
+      "upcoming": {
+        "label": "配信前",
+        "hint": "配信・プレミア公開が始まったら取り込みます。"
       }
     },
     "conflict": {
