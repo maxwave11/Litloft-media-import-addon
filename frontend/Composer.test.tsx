@@ -349,3 +349,47 @@ describe("Composer IME composition", () => {
     expect(mockCreateLoft.mock.calls[0][0]).toBe(URL_TYPED);
   });
 });
+
+describe("Composer Shorts option", () => {
+  async function renderChannel(
+    kind: "channel" | "playlist" = "channel",
+  ): Promise<void> {
+    mockResolveUrl.mockResolvedValue({
+      kind, provider: "youtube", ref: kind === "channel" ? "UCabc" : "PLabc",
+    });
+    mockCreateSubscription.mockResolvedValue({ id: 7 });
+    mockSyncSubscription.mockResolvedValue({ status: "queued" });
+    render(<Composer drive="d" initialExpanded={true} onCreated={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText("https://..."), {
+      target: { value: "https://www.youtube.com/channel/UCabc" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-submit")).toHaveTextContent(
+        "Subscribe",
+      );
+    });
+    fireEvent.click(screen.getByTestId("composer-advanced-toggle"));
+  }
+
+  it("imports Shorts unless the channel option is unchecked", async () => {
+    await renderChannel();
+    const checkbox = screen.getByTestId("composer-include-shorts");
+    expect(checkbox).toBeChecked();
+
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByTestId("composer-submit"));
+
+    await waitFor(() =>
+      expect(mockCreateSubscription).toHaveBeenCalledWith(
+        expect.objectContaining({ include_shorts: false }),
+      ),
+    );
+  });
+
+  it("offers the option only for a channel", async () => {
+    await renderChannel("playlist");
+    expect(
+      screen.queryByTestId("composer-include-shorts"),
+    ).not.toBeInTheDocument();
+  });
+});

@@ -61,7 +61,10 @@ from .schemas import (
 )
 from .comments import load_snapshot, supports_comments
 from .subscription import db as subdb
-from .subscription.registry import find_subscription_provider_by_url
+from .subscription.registry import (
+    find_subscription_provider_by_url,
+    get_subscription_provider,
+)
 from .service import (
     loft_manager,
     subscription_avatar_path,
@@ -457,6 +460,7 @@ def _row_to_subscription_response(
         avatar_url=row.get("avatar_url"),
         display_title=row.get("display_title"),
         display_mode=row.get("display_mode") or "library",
+        include_shorts=bool(row.get("include_shorts", 1)),
     )
 
 
@@ -518,6 +522,7 @@ async def create_subscription(
                 cooldown_minutes=request.cooldown_minutes,
                 include_no_transcript=request.include_no_transcript,
                 display_mode=request.display_mode,
+                include_shorts=request.include_shorts,
             ),
         )
     except ValueError as exc:
@@ -699,6 +704,7 @@ async def patch_subscription(
         folder_path=folder,
         display_title=patch.display_title,
         display_mode=patch.display_mode,
+        include_shorts=patch.include_shorts,
         clear_cooldown_until=(
             patch.cooldown_minutes is not None
             and not _fetch_all_error_cooldown_active(sub)
@@ -727,13 +733,17 @@ async def get_subscription_avatar(
     """
     # An <img> cannot send X-Lit-Drive, so the header is optional here; the
     # row's own drive is still checked against the caller's unlocked groups.
+    # The drive scope is resolved first so a locked or unknown drive answers
+    # "Drive not found" instead of revealing whether the id exists.
+    scoped = (
+        _scoped_drive(x_lit_drive, unlocked_groups) if x_lit_drive else None
+    )
     row = _load_subscription_row(subscription_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    scoped = (
-        _scoped_drive(x_lit_drive, unlocked_groups) if x_lit_drive else row["drive"]
+    _load_owned_subscription(
+        subscription_id, scoped or row["drive"], unlocked_groups
     )
-    _load_owned_subscription(subscription_id, scoped, unlocked_groups)
     path = subscription_avatar_path(subscription_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Avatar not available")
@@ -890,6 +900,42 @@ async def stop_fetch_all_channel(
     return _row_to_subscription_response(
         _load_owned_subscription(subscription_id, scoped, unlocked_groups),
         running=subscription_id in subscription_worker.running_ids,
+    )
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/remove-shorts",
+    response_model=SubscriptionEnqueueResponse,
+)
+async def remove_subscription_shorts(
+    subscription_id: int,
+    x_lit_drive: str | None = Header(default=None, alias="X-Lit-Drive"),
+    unlocked_groups: list[str] = Depends(get_unlocked_groups),
+) -> SubscriptionEnqueueResponse:
+    """Move the already-imported Shorts of a YouTube channel to Trash.
+
+    Runs on the subscription worker: identifying a Short needs one
+    yt-dlp extraction of the channel's Shorts tab, which can outlast a
+    comfortable HTTP request. The outcome arrives on
+    ``media_import.subscription.sync_completed`` with ``kind`` set to
+    ``purge_shorts`` and a ``removed`` count.
+    """
+    scoped = _scoped_drive(x_lit_drive, unlocked_groups)
+    sub = _load_owned_subscription(subscription_id, scoped, unlocked_groups)
+    provider = get_subscription_provider(sub["provider"])
+    if (
+        sub["source_kind"] != "channel"
+        or provider is None
+        or not hasattr(provider, "list_short_ids")
+    ):
+        raise HTTPException(
+            status_code=400, detail="This source has no Shorts to remove"
+        )
+    queued = await subscription_worker.enqueue_sync(
+        subscription_id, kind="purge_shorts"
+    )
+    return SubscriptionEnqueueResponse(
+        status="queued" if queued else "already_queued"
     )
 
 

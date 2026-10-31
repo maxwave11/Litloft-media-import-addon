@@ -77,6 +77,7 @@ def insert_subscription(
     cooldown_minutes: int,
     include_no_transcript: bool,
     display_mode: str = "library",
+    include_shorts: bool = True,
 ) -> int:
     now = datetime.now(UTC).isoformat()
     db = SessionLocal()
@@ -86,9 +87,9 @@ def insert_subscription(
                 "INSERT INTO subscriptions "
                 "(provider, source_kind, source_ref, drive, folder_path, "
                 " is_enabled, cooldown_minutes, include_no_transcript, "
-                " display_mode, created_at) "
+                " display_mode, include_shorts, created_at) "
                 "VALUES (:provider, :kind, :ref, :drive, :folder, "
-                " 1, :cd, :inc, :mode, :created_at) "
+                " 1, :cd, :inc, :mode, :shorts, :created_at) "
                 "RETURNING id"
             ),
             {
@@ -100,6 +101,7 @@ def insert_subscription(
                 "cd": cooldown_minutes,
                 "inc": int(include_no_transcript),
                 "mode": display_mode,
+                "shorts": int(include_shorts),
                 "created_at": now,
             },
         )
@@ -131,6 +133,7 @@ def update_settings(
     folder_path: str | None = None,
     display_title: str | None = None,
     display_mode: str | None = None,
+    include_shorts: bool | None = None,
     clear_cooldown_until: bool = False,
 ) -> None:
     """PATCH-style update for user-editable subscription fields.
@@ -166,6 +169,11 @@ def update_settings(
         # (spec 2026-08-10-media-import-watch-surface.md §3.2).
         set_clauses.append("display_mode = :mode")
         params["mode"] = display_mode
+    if include_shorts is not None:
+        # Listings only: videos already imported stay where they are, so
+        # turning this off never deletes anything by itself.
+        set_clauses.append("include_shorts = :shorts")
+        params["shorts"] = int(include_shorts)
     if clear_cooldown_until:
         set_clauses.append("cooldown_until = NULL")
     if not set_clauses:
@@ -577,7 +585,7 @@ def load_subscription(subscription_id: int) -> dict | None:
                 "SELECT provider, source_kind, source_ref, drive, "
                 " folder_path, include_no_transcript, avatar_url, "
                 " display_title, is_enabled, cooldown_until, fetch_all_status, "
-                " fetch_all_limit, fetch_all_next_at "
+                " fetch_all_limit, fetch_all_next_at, include_shorts "
                 "FROM subscriptions WHERE id = :id"
             ),
             {"id": subscription_id},
@@ -762,6 +770,79 @@ def load_seen_item_ids(subscription_id: int) -> set[str]:
     finally:
         db.close()
     return {r[0] for r in rows}
+
+
+def load_video_rows(subscription_id: int) -> list[dict]:
+    """Every recorded item for a subscription, in no particular order."""
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT item_id, status, error_kind, file_id "
+                "FROM subscription_videos WHERE subscription_id = :id"
+            ),
+            {"id": subscription_id},
+        ).mappings().all()
+    finally:
+        db.close()
+    return [dict(r) for r in rows]
+
+
+def mark_videos_dismissed(
+    subscription_id: int, item_ids: list[str]
+) -> None:
+    """Mark items as user-skipped so they never re-enter the import flow.
+
+    The rows stay: ``load_seen_item_ids`` reads them, which is what keeps
+    a purged item from being re-imported by the next sync.
+    """
+    if not item_ids:
+        return
+    placeholders = ", ".join(f":i{n}" for n in range(len(item_ids)))
+    params: dict = {
+        f"i{n}": item_id for n, item_id in enumerate(item_ids)
+    }
+    params["sid"] = subscription_id
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                "UPDATE subscription_videos "
+                "SET status = 'failed', error_kind = 'dismissed' "
+                f"WHERE subscription_id = :sid AND item_id IN ({placeholders})"
+            ),
+            params,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def trash_files(file_ids: list[str]) -> list[str]:
+    """Move files to Trash through core's ``fileops``. Returns the moved ids.
+
+    Soft delete only: the .loft stays on disk and the owner can restore it
+    from the Trash, which is the same contract the files UI has.
+    """
+    from app.models import File, active_file_filter
+    from app.services import fileops
+
+    if not file_ids:
+        return []
+    trashed: list[str] = []
+    db = SessionLocal()
+    try:
+        for file_id in file_ids:
+            file = db.query(File).filter(
+                File.id == file_id, active_file_filter()
+            ).first()
+            if file is None:
+                continue
+            fileops.delete_file(db, file_id)
+            trashed.append(file_id)
+    finally:
+        db.close()
+    return trashed
 
 
 def load_video_row(

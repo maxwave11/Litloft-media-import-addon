@@ -75,6 +75,7 @@ function makeSubscription(
     avatar_url: null,
     display_title: "Chan",
     display_mode: "library",
+    include_shorts: true,
     ...overrides,
   };
 }

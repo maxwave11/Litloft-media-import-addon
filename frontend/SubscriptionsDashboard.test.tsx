@@ -58,6 +58,7 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
     avatar_url: null,
     display_title: null,
     display_mode: "library",
+    include_shorts: true,
     ...overrides,
   };
 }

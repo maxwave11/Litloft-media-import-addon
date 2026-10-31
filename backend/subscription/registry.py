@@ -138,13 +138,26 @@ class SubscriptionProvider(Protocol):
         ...
 
     def list_items(
-        self, ref: SubscriptionRef, limit: int | None = None
+        self, ref: SubscriptionRef, limit: int | None = None, *,
+        include_shorts: bool = True,
     ) -> list[ItemHeader]:
         """Return upstream items for diff detection.
 
         ``limit=None`` means "all available". Implementations should be
         cheap for typical limits (RSS for YouTube is ~15 items) and may
         fall back to heavier fetchers (yt-dlp) for larger limits.
+
+        ``include_shorts=False`` keeps short-form uploads out of the
+        listing. Providers that cannot tell them apart ignore it; the
+        caller stores the preference but gains nothing.
+
+        Optional capabilities, discovered with ``getattr`` rather than
+        declared here so a provider can implement the rest without them:
+
+        - ``list_channel_history(ref, limit, include_shorts=True)`` —
+          deep listing for backfill / fetch-all.
+        - ``list_short_ids(ref, limit)`` — ids of the source's
+          short-form uploads, newest first.
         """
         ...
 

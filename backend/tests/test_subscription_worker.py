@@ -35,6 +35,10 @@ class _FakeManager:
     on_call: Callable[[int], None] | None = None
     next_backoff: int = 60
     backoff_calls: list[tuple[int, object]] = field(default_factory=list)
+    purge_calls: list[int] = field(default_factory=list)
+    purge_result: dict = field(
+        default_factory=lambda: {"removed": 3, "matched": 3}
+    )
 
     def _load_subscription(self, subscription_id: int) -> dict:
         from addons.media_import.subscription.manager import (
@@ -62,6 +66,12 @@ class _FakeManager:
 
     def _next_backoff_minutes(self, subscription_id: int) -> int:
         return self.next_backoff
+
+    def purge_shorts(self, subscription_id: int) -> dict:
+        self.purge_calls.append(subscription_id)
+        if self.raise_on == subscription_id:
+            raise RuntimeError(f"forced failure for {subscription_id}")
+        return dict(self.purge_result)
 
     def _set_cooldown_until(self, subscription_id: int, until) -> None:
         self.backoff_calls.append((subscription_id, until))
@@ -343,6 +353,58 @@ class TestBroadcasts:
         asyncio.run(_scenario())
         assert [e for e, _ in _broadcasts] == []
         assert mgr.calls == []
+
+
+# ---- purge Shorts job ---------------------------------------------
+
+
+class TestPurgeShortsJob:
+    def test_purge_job_runs_the_manager_and_reports_the_count(
+        self, _broadcasts
+    ):
+        mgr = _FakeManager(drives={1: "d"}, purge_result={"removed": 7, "matched": 9})
+        w = _build_worker(mgr)
+
+        async def _scenario():
+            await w.start()
+            try:
+                await w.enqueue_sync(1, kind="purge_shorts")
+                await _drain(w)
+            finally:
+                await w.stop()
+
+        asyncio.run(_scenario())
+
+        assert mgr.purge_calls == [1]
+        # A purge is not a sync: it must not fall through to _sync_blocking.
+        assert mgr.calls == []
+        completed = [
+            payload for event, payload in _broadcasts
+            if event == "media_import.subscription.sync_completed"
+        ]
+        assert completed[-1]["kind"] == "purge_shorts"
+        assert completed[-1]["removed"] == 7
+
+    def test_purge_failure_is_reported(self, _broadcasts):
+        mgr = _FakeManager(drives={1: "d"}, raise_on=1)
+        w = _build_worker(mgr)
+
+        async def _scenario():
+            await w.start()
+            try:
+                await w.enqueue_sync(1, kind="purge_shorts")
+                await _drain(w)
+            finally:
+                await w.stop()
+
+        asyncio.run(_scenario())
+
+        completed = [
+            payload for event, payload in _broadcasts
+            if event == "media_import.subscription.sync_completed"
+        ]
+        assert completed[-1]["kind"] == "purge_shorts"
+        assert completed[-1]["error"] == "exception"
 
 
 # ---- running_ids API for HTTP layer -------------------------------

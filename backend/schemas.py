@@ -99,6 +99,7 @@ class SubscriptionCreateRequest(BaseModel):
     cooldown_minutes: int = 60
     include_no_transcript: bool = False
     display_mode: DisplayMode = "library"
+    include_shorts: bool = True
 
 
 class SubscriptionResponse(BaseModel):
@@ -126,6 +127,7 @@ class SubscriptionResponse(BaseModel):
     # default, so this is never actually absent — typed non-optional to
     # keep the frontend from having to handle a third state.
     display_mode: DisplayMode = "library"
+    include_shorts: bool = True
 
 
 class SubscriptionPatchRequest(BaseModel):
@@ -144,6 +146,7 @@ class SubscriptionPatchRequest(BaseModel):
     folder_path: str | None = None
     display_title: str | None = None
     display_mode: DisplayMode | None = None
+    include_shorts: bool | None = None
 
 
 class SubscriptionSummaryResponse(BaseModel):

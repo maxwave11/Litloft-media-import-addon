@@ -12,6 +12,7 @@ import {
   extendBackfill,
   listSubscriptionVideos,
   listSubscriptions,
+  removeSubscriptionShorts,
   setFetchAllChannel,
   patchSubscription,
   refreshSubscriptionMetadata,
@@ -72,6 +73,8 @@ export default function SubscriptionDetailPanel({
   const [backfillCount, setBackfillCount] = useState(15);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillMessage, setBackfillMessage] = useState<string | null>(null);
+  const [removingShorts, setRemovingShorts] = useState(false);
+  const [shortsMessage, setShortsMessage] = useState<string | null>(null);
   const fetchAllActive = subscription.fetch_all_status === "active";
 
   const completedEvent = useWebSocket(
@@ -139,6 +142,15 @@ export default function SubscriptionDetailPanel({
     if (!completedEvent) return;
     if (completedEvent.data?.subscription_id !== subscription.id) return;
     loadVideos();
+    if (completedEvent.data?.kind === "purge_shorts") {
+      setShortsMessage(
+        completedEvent.data.error
+          ? t("options.removeShortsFailed")
+          : t("options.removedShorts", {
+              count: Number(completedEvent.data.removed) || 0,
+            }),
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [completedEvent, subscription.id]);
 
@@ -194,6 +206,27 @@ export default function SubscriptionDetailPanel({
       setBackfillMessage(t("items.backfillFailed"));
     } finally {
       setBackfilling(false);
+    }
+  }
+
+  async function handleRemoveShorts() {
+    const message = t("options.removeShortsConfirm", {
+      title: subscription.display_title || subscription.source_ref,
+    });
+    if (!confirm(message)) return;
+    setError(null);
+    setRemovingShorts(true);
+    setShortsMessage(t("options.removeShortsQueued"));
+    try {
+      const result = await removeSubscriptionShorts(drive, subscription.id);
+      if (result.status === "already_queued") {
+        setShortsMessage(t("options.removeShortsBusy"));
+      }
+    } catch (e) {
+      setShortsMessage(null);
+      setError(e instanceof Error ? e.message : t("options.removeShortsFailed"));
+    } finally {
+      setRemovingShorts(false);
     }
   }
 
@@ -279,6 +312,9 @@ export default function SubscriptionDetailPanel({
   const displayTitle =
     subscription.display_title || subscription.source_ref;
   const isPlaylist = subscription.source_kind === "playlist";
+  const isYoutubeChannel =
+    subscription.source_kind === "channel" &&
+    subscription.provider === "youtube";
 
   return (
     <div
@@ -501,6 +537,43 @@ export default function SubscriptionDetailPanel({
             />
             {t("options.includeNoTranscript")}
           </label>
+          {isYoutubeChannel && (
+            <div className="mt-3 border-t border-bg-border pt-3">
+              <label className="flex items-center gap-2 text-xs text-text-primary">
+                <input
+                  type="checkbox"
+                  checked={subscription.include_shorts}
+                  onChange={(e) =>
+                    applyPatch({ include_shorts: e.target.checked })
+                  }
+                  disabled={busy}
+                  data-testid="include-shorts"
+                />
+                {t("options.importShorts")}
+              </label>
+              <p className="mt-1 text-xs text-text-muted">
+                {t("options.importShortsHint")}
+              </p>
+              <button
+                type="button"
+                onClick={handleRemoveShorts}
+                disabled={busy || removingShorts || subscription.running}
+                className="mt-2 rounded-2xl border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-50"
+                data-testid="remove-shorts"
+              >
+                {t("options.removeShorts")}
+              </button>
+              {shortsMessage && (
+                <p
+                  className="mt-2 text-xs text-text-muted"
+                  role="status"
+                  data-testid="shorts-message"
+                >
+                  {shortsMessage}
+                </p>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="border-b border-bg-border px-5 py-4">

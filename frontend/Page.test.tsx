@@ -73,6 +73,7 @@ function makeSubscription(mode: Subscription["display_mode"]): Subscription {
     avatar_url: null,
     display_title: "Chan",
     display_mode: mode,
+    include_shorts: true,
   };
 }
 

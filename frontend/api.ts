@@ -222,6 +222,9 @@ export interface Subscription {
   // Never absent: rows predating the column read back as the DDL
   // default ("library").
   display_mode: DisplayMode;
+  // Shorts are uploads too, so a channel's feed carries them until this
+  // is turned off. Only channel subscriptions have the setting.
+  include_shorts: boolean;
 }
 
 export interface SubscriptionPatch {
@@ -231,6 +234,7 @@ export interface SubscriptionPatch {
   folder_path?: string;
   display_title?: string;
   display_mode?: DisplayMode;
+  include_shorts?: boolean;
 }
 
 export interface SubscriptionSummary {
@@ -313,6 +317,7 @@ export interface SubscriptionCreateInput {
   cooldown_minutes?: number;
   include_no_transcript?: boolean;
   display_mode?: DisplayMode;
+  include_shorts?: boolean;
 }
 
 export async function createSubscription(
@@ -332,6 +337,7 @@ export async function createSubscription(
       cooldown_minutes: input.cooldown_minutes ?? 60,
       include_no_transcript: input.include_no_transcript ?? false,
       display_mode: input.display_mode ?? "library",
+      include_shorts: input.include_shorts ?? true,
     }),
   });
   return _json<Subscription>(res);
@@ -400,6 +406,18 @@ export async function setFetchAllChannel(
     headers: driveHeaders(drive),
   });
   return _json<Subscription>(res);
+}
+
+export async function removeSubscriptionShorts(
+  drive: string,
+  id: number,
+): Promise<SubscriptionEnqueueResult> {
+  const res = await fetch(`${BASE}/subscriptions/${id}/remove-shorts`, {
+    method: "POST",
+    credentials: "include",
+    headers: driveHeaders(drive),
+  });
+  return _json<SubscriptionEnqueueResult>(res);
 }
 
 export async function listSubscriptionVideos(

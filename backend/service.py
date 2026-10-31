@@ -1415,6 +1415,7 @@ def _ensure_subscription_tables() -> None:
                     avatar_url TEXT,
                     display_title TEXT,
                     display_mode TEXT NOT NULL DEFAULT 'library',
+                    include_shorts BOOLEAN NOT NULL DEFAULT 1,
                     UNIQUE(provider, source_kind, source_ref, drive, folder_path)
                 )
                 """
@@ -1433,6 +1434,10 @@ def _ensure_subscription_tables() -> None:
             # 2026-08-10-media-import-watch-surface.md §8.
             "ALTER TABLE subscriptions ADD COLUMN display_mode TEXT "
             "NOT NULL DEFAULT 'library'",
+            # Existing rows read back as 1: skipping Shorts is an explicit
+            # per-subscription choice, never a side effect of upgrading.
+            "ALTER TABLE subscriptions ADD COLUMN include_shorts BOOLEAN "
+            "NOT NULL DEFAULT 1",
         ):
             try:
                 db.execute(text(column_sql))

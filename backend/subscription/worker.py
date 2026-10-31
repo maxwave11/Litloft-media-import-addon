@@ -32,7 +32,9 @@ from . import db as subdb
 logger = logging.getLogger(__name__)
 
 
-JobKind = Literal["initial", "manual", "backfill", "retry", "cron", "fetch_all"]
+JobKind = Literal[
+    "initial", "manual", "backfill", "retry", "cron", "fetch_all", "purge_shorts"
+]
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,30 @@ class SubscriptionWorker:
             logger.info(
                 "subscription %s vanished before sync, skipping",
                 job.subscription_id,
+            )
+            return
+
+        if job.kind == "purge_shorts":
+            try:
+                result = await loop.run_in_executor(
+                    None, self._manager.purge_shorts, job.subscription_id
+                )
+            except Exception:
+                logger.exception("purge_shorts failed: %s", job)
+                self._broadcast(
+                    "media_import.subscription.sync_completed",
+                    subscription_id=job.subscription_id,
+                    drive=drive,
+                    kind=job.kind,
+                    error="exception",
+                )
+                return
+            self._broadcast(
+                "media_import.subscription.sync_completed",
+                subscription_id=job.subscription_id,
+                drive=drive,
+                kind=job.kind,
+                **result,
             )
             return
 

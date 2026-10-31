@@ -103,6 +103,9 @@ export default function Composer({
   // "make this searchable", not "queue this up to watch".
   const [displayMode, setDisplayMode] = useState<DisplayMode>("library");
   const [includeNoTranscript, setIncludeNoTranscript] = useState(false);
+  // Checked by default: a channel's Shorts are uploads, so subscribing has
+  // always imported them. Turning this off is the opt-out.
+  const [includeShorts, setIncludeShorts] = useState(true);
   const [sttMode, setSttMode] = useState<SttMode>("manual");
 
   const [submitting, setSubmitting] = useState(false);
@@ -167,6 +170,7 @@ export default function Composer({
           folder_path: selectedFolder,
           include_no_transcript: includeNoTranscript,
           display_mode: displayMode,
+          include_shorts: includeShorts,
         });
         await syncSubscription(drive, sub.id, backfill);
       } else {
@@ -398,6 +402,23 @@ export default function Composer({
                   />
                   {t("composer.includeNoTranscript")}
                 </label>
+                {kind === "channel" && provider === "youtube" && (
+                  <label className="flex items-start gap-2 text-xs text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={includeShorts}
+                      onChange={(e) => setIncludeShorts(e.target.checked)}
+                      className="mt-0.5"
+                      data-testid="composer-include-shorts"
+                    />
+                    <span>
+                      <span className="block">{t("composer.includeShorts")}</span>
+                      <span className="mt-0.5 block text-text-muted">
+                        {t("composer.includeShortsHint")}
+                      </span>
+                    </span>
+                  </label>
+                )}
               </div>
             )}
           </div>

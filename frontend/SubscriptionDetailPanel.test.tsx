@@ -12,6 +12,7 @@ const mockPatch = vi.fn();
 const mockListVideos = vi.fn();
 const mockExtendBackfill = vi.fn();
 const mockFetchAll = vi.fn();
+const mockRemoveShorts = vi.fn();
 
 vi.mock("@/addons/media_import/api", async () => {
   const actual = await vi.importActual<typeof import("@/addons/media_import/api")>(
@@ -23,6 +24,7 @@ vi.mock("@/addons/media_import/api", async () => {
     listSubscriptionVideos: (...args: unknown[]) => mockListVideos(...args),
     extendBackfill: (...args: unknown[]) => mockExtendBackfill(...args),
     setFetchAllChannel: (...args: unknown[]) => mockFetchAll(...args),
+    removeSubscriptionShorts: (...args: unknown[]) => mockRemoveShorts(...args),
     deleteSubscription: vi.fn(),
     syncSubscription: vi.fn(),
     refreshSubscriptionMetadata: vi.fn(),
@@ -30,8 +32,12 @@ vi.mock("@/addons/media_import/api", async () => {
   };
 });
 
+const ws = vi.hoisted(() => ({
+  event: null as { event: string; data: Record<string, unknown> } | null,
+}));
+
 vi.mock("@/hooks/useWebSocket", () => ({
-  useWebSocket: () => null,
+  useWebSocket: () => ws.event,
 }));
 
 function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
@@ -53,6 +59,7 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
     avatar_url: null,
     display_title: "Test Channel",
     display_mode: "library",
+    include_shorts: true,
     ...overrides,
   };
 }
@@ -66,9 +73,11 @@ const defaultProps = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ws.event = null;
   mockListVideos.mockResolvedValue([] as SubscriptionVideo[]);
   mockPatch.mockResolvedValue(makeSubscription());
   mockExtendBackfill.mockResolvedValue({ status: "queued" });
+  mockRemoveShorts.mockResolvedValue({ status: "queued" });
 });
 
 describe("SubscriptionDetailPanel — folder edit", () => {
@@ -190,5 +199,72 @@ describe("Full channel background import controls", () => {
     render(<SubscriptionDetailPanel {...defaultProps} subscription={makeSubscription({ source_kind: "playlist" })} />);
     expect(screen.queryByTestId("fetch-all-button")).not.toBeInTheDocument();
     await waitFor(() => expect(mockListVideos).toHaveBeenCalled());
+  });
+});
+
+
+describe("Shorts controls", () => {
+  it("patches include_shorts when the toggle is unchecked", async () => {
+    render(<SubscriptionDetailPanel {...defaultProps} />);
+    await waitFor(() => expect(screen.getByTestId("include-shorts")).toBeChecked());
+
+    fireEvent.click(screen.getByTestId("include-shorts"));
+
+    await waitFor(() =>
+      expect(mockPatch).toHaveBeenCalledWith("d", 1, { include_shorts: false }),
+    );
+  });
+
+  it("offers the Shorts controls only for a YouTube channel", async () => {
+    render(
+      <SubscriptionDetailPanel
+        {...defaultProps}
+        subscription={makeSubscription({ source_kind: "playlist" })}
+      />,
+    );
+    expect(screen.queryByTestId("include-shorts")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("remove-shorts")).not.toBeInTheDocument();
+  });
+
+  it("queues removing Shorts after confirming", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<SubscriptionDetailPanel {...defaultProps} />);
+    await waitFor(() => expect(screen.getByTestId("remove-shorts")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("remove-shorts"));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    await waitFor(() => expect(mockRemoveShorts).toHaveBeenCalledWith("d", 1));
+    await waitFor(() =>
+      expect(screen.getByTestId("shorts-message")).toBeInTheDocument(),
+    );
+    confirmSpy.mockRestore();
+  });
+
+  it("sends nothing when the confirmation is declined", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<SubscriptionDetailPanel {...defaultProps} />);
+    await waitFor(() => expect(screen.getByTestId("remove-shorts")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("remove-shorts"));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    expect(mockRemoveShorts).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("reports how many Shorts the worker moved when it finishes", async () => {
+    const { rerender } = render(<SubscriptionDetailPanel {...defaultProps} />);
+    await waitFor(() => expect(screen.getByTestId("include-shorts")).toBeInTheDocument());
+
+    ws.event = {
+      event: "media_import.subscription.sync_completed",
+      data: { subscription_id: 1, kind: "purge_shorts", removed: 12 },
+    };
+    rerender(<SubscriptionDetailPanel {...defaultProps} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("shorts-message")).toHaveTextContent("12"),
+    );
   });
 });

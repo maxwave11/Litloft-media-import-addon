@@ -74,6 +74,8 @@
       "backfillHintChannel": "最新N件のアップロードを取り込みます。",
       "backfillHintPlaylist": "プレイリスト先頭からN件を取り込みます。",
       "includeNoTranscript": "字幕がない動画でも文字起こしを試みる",
+      "includeShorts": "ショート動画をインポート",
+      "includeShortsHint": "オフにすると、チャンネルの通常動画だけをインポートします。インポート済みのショート動画は購読の詳細から削除できます。",
       "sttMode": {
         "label": "文字起こし",
         "manual": "字幕を使用",
@@ -205,7 +207,15 @@
       },
       "options": {
         "heading": "オプション",
-        "includeNoTranscript": "字幕がない動画でも文字起こしを試みる"
+        "includeNoTranscript": "字幕がない動画でも文字起こしを試みる",
+        "importShorts": "ショート動画をインポート",
+        "importShortsHint": "オフにすると、チャンネルの通常動画だけをインポートします。インポート済みのショート動画は、削除するまで残ります。",
+        "removeShorts": "ショート動画を削除",
+        "removeShortsConfirm": "「{title}」からインポートしたショート動画をすべてゴミ箱に移動しますか？ 購読には記録が残るため、再インポートはされません。",
+        "removeShortsQueued": "ショート動画を削除しています…",
+        "removeShortsBusy": "この購読にはすでに同期が予約されています。完了してからもう一度お試しください。",
+        "removedShorts": "{count} 件のショート動画をゴミ箱に移動しました",
+        "removeShortsFailed": "ショート動画を削除できませんでした"
       },
       "items": {
         "heading": "アイテム",

@@ -25,6 +25,8 @@ SUBSCRIPTIONS_COLUMNS = (
     # at create time, and refreshable later via the dedicated route.
     "avatar_url",
     "display_title",
+    "display_mode",
+    "include_shorts",
 )
 
 SUBSCRIPTION_VIDEOS_COLUMNS = (
@@ -130,6 +132,16 @@ class TestSubscriptionTablesSchema:
                     """
                 )
             )
+            db.execute(
+                text(
+                    "INSERT INTO subscriptions "
+                    "(provider, source_kind, source_ref, drive, folder_path, "
+                    " is_enabled, cooldown_minutes, include_no_transcript, "
+                    " created_at) "
+                    "VALUES ('youtube', 'channel', 'UClegacy', 'media', '', "
+                    " 1, 60, 0, '2026-05-01T00:00:00')"
+                )
+            )
             db.commit()
         finally:
             db.close()
@@ -146,11 +158,19 @@ class TestSubscriptionTablesSchema:
                     text("PRAGMA table_info(subscriptions)")
                 ).fetchall()
             }
+            shorts = db.execute(
+                text(
+                    "SELECT include_shorts FROM subscriptions "
+                    "WHERE source_ref = 'UClegacy'"
+                )
+            ).scalar()
         finally:
             db.close()
 
         assert "avatar_url" in cols
         assert "display_title" in cols
+        # A row that predates the column keeps importing Shorts.
+        assert shorts == 1
 
 
 class TestSubscriptionsUniqueConstraint:

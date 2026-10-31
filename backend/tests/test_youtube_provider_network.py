@@ -411,6 +411,109 @@ class TestListItemsPlaylist:
             assert provider.list_items(ref, limit=None) == []
 
 
+class TestListItemsSkipShorts:
+    """Shorts ride along in the Atom feed and the uploads playlist, so a
+    subscription that opts out has to list the Videos tab instead."""
+
+    def _ref(self) -> SubscriptionRef:
+        return SubscriptionRef(
+            kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv"
+        )
+
+    def test_uses_videos_tab_and_never_the_feed(
+        self, provider: YouTubeProvider
+    ) -> None:
+        flat_entries = [{"id": "vid111111111", "title": "Regular"}]
+        with patch(
+            "addons.media_import.subscription.providers.youtube._http_get_bytes",
+        ) as mock_fetch, patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=flat_entries,
+        ) as mock_flat:
+            items = provider.list_items(
+                self._ref(), limit=15, include_shorts=False
+            )
+
+        assert mock_fetch.call_count == 0
+        called_url, called_limit = mock_flat.call_args[0]
+        assert called_url.endswith("/channel/UCabcdefghijklmnopqrstuv/videos")
+        assert called_limit == 15
+        assert [i.item_id for i in items] == ["vid111111111"]
+
+    def test_cron_limit_none_stays_bounded(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # limit=None means "the whole history" to yt-dlp; the cron sweep
+        # must not ask for that.
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[],
+        ) as mock_flat:
+            provider.list_items(self._ref(), limit=None, include_shorts=False)
+        assert mock_flat.call_args[0][1] == 15
+
+    def test_empty_tab_is_an_answer_not_a_failure(
+        self, provider: YouTubeProvider
+    ) -> None:
+        # A channel that only posts Shorts has nothing on this tab.
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[],
+        ):
+            assert provider.list_items(
+                self._ref(), limit=None, include_shorts=False
+            ) == []
+
+    def test_history_uses_videos_tab_not_the_uploads_playlist(
+        self, provider: YouTubeProvider
+    ) -> None:
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[{"id": "vid111111111"}],
+        ) as mock_flat:
+            provider.list_channel_history(
+                self._ref(), 40, include_shorts=False
+            )
+        called_url, called_limit = mock_flat.call_args[0]
+        assert called_url.endswith("/channel/UCabcdefghijklmnopqrstuv/videos")
+        assert called_limit == 40
+        assert "list=UU" not in called_url
+
+    def test_history_keeps_the_uploads_playlist_by_default(
+        self, provider: YouTubeProvider
+    ) -> None:
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[],
+        ) as mock_flat:
+            provider.list_channel_history(self._ref(), 40)
+        assert "list=UUabcdefghijklmnopqrstuv" in mock_flat.call_args[0][0]
+
+
+class TestListShortIds:
+    def test_lists_the_shorts_tab(self, provider: YouTubeProvider) -> None:
+        ref = SubscriptionRef(
+            kind=REF_KIND_CHANNEL, ref="UCabcdefghijklmnopqrstuv"
+        )
+        with patch(
+            "addons.media_import.subscription.providers.youtube._yt_dlp_extract_flat",
+            return_value=[{"id": "short000001"}, {"id": None}, {"title": "no id"}],
+        ) as mock_flat:
+            ids = provider.list_short_ids(ref, 120)
+
+        called_url, called_limit = mock_flat.call_args[0]
+        assert called_url.endswith("/channel/UCabcdefghijklmnopqrstuv/shorts")
+        assert called_limit == 120
+        assert ids == ["short000001"]
+
+    def test_rejects_a_playlist_ref(self, provider: YouTubeProvider) -> None:
+        ref = SubscriptionRef(
+            kind=REF_KIND_PLAYLIST, ref="PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf"
+        )
+        with pytest.raises(ValueError):
+            provider.list_short_ids(ref, 10)
+
+
 # ---- fetch_item ---------------------------------------------------
 
 

@@ -368,7 +368,8 @@ class YouTubeProvider:
     # ---- network-bound -------------------------------------------
 
     def list_items(
-        self, ref: SubscriptionRef, limit: int | None = None
+        self, ref: SubscriptionRef, limit: int | None = None, *,
+        include_shorts: bool = True,
     ) -> list[ItemHeader]:
         if ref.kind == REF_KIND_CHANNEL:
             if not _CHANNEL_ID_RE.match(ref.ref):
@@ -378,6 +379,13 @@ class YouTubeProvider:
                     f"must canonicalize handles before calling list_items."
                 )
             url = f"https://www.youtube.com/channel/{ref.ref}/videos"
+            if not include_shorts:
+                # The Atom feed and the uploads playlist both carry
+                # Shorts; the Videos tab is the one listing that does
+                # not. An empty tab is a legitimate answer here (a
+                # channel that only posts Shorts), not a failed listing,
+                # so [] is returned instead of raising.
+                return self._yt_dlp_headers(url, limit or _RSS_MAX_ITEMS)
             if limit is None or limit <= _RSS_MAX_ITEMS:
                 headers = self._list_channel_via_rss(ref.ref, limit)
                 if headers is not None:
@@ -398,11 +406,37 @@ class YouTubeProvider:
 
         raise ValueError(f"unsupported ref kind: {ref.kind!r}")
 
-    def list_channel_history(self, ref: SubscriptionRef, limit: int) -> list[ItemHeader]:
+    def list_channel_history(
+        self, ref: SubscriptionRef, limit: int, *,
+        include_shorts: bool = True,
+    ) -> list[ItemHeader]:
         if ref.kind != REF_KIND_CHANNEL or not _CHANNEL_ID_RE.match(ref.ref):
             raise ValueError("Channel history requires a canonical channel id")
+        if not include_shorts:
+            # Same tab as list_items: the uploads playlist interleaves
+            # Shorts with regular uploads.
+            return self._yt_dlp_headers(
+                f"https://www.youtube.com/channel/{ref.ref}/videos", limit
+            )
         uploads_id = "UU" + ref.ref[2:]
         return self._yt_dlp_headers(f"https://www.youtube.com/playlist?list={uploads_id}", limit)
+
+    def list_short_ids(
+        self, ref: SubscriptionRef, limit: int
+    ) -> list[str]:
+        """The channel's most recent Shorts, newest first.
+
+        Only the Shorts tab answers this: a Short's watch URL and its
+        metadata are indistinguishable from a regular upload's, so
+        membership in this listing is what identifies one.
+        """
+        if ref.kind != REF_KIND_CHANNEL or not _CHANNEL_ID_RE.match(ref.ref):
+            raise ValueError("Shorts listing requires a canonical channel id")
+        entries = _yt_dlp_extract_flat(
+            f"https://www.youtube.com/channel/{ref.ref}/shorts", limit
+        )
+        return [str(e["id"]) for e in entries if e.get("id")]
+
 
     def _list_channel_via_rss(
         self, channel_id: str, limit: int | None

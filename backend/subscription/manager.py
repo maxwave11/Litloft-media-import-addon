@@ -165,6 +165,7 @@ class SubscriptionManager:
         cooldown_minutes: int = 60,
         include_no_transcript: bool = False,
         display_mode: str = "library",
+        include_shorts: bool = True,
     ) -> int:
         match = find_subscription_provider_by_url(url)
         if match is None:
@@ -186,6 +187,7 @@ class SubscriptionManager:
             cooldown_minutes=cooldown_minutes,
             include_no_transcript=include_no_transcript,
             display_mode=display_mode,
+            include_shorts=include_shorts,
         )
 
         # Best-effort source-metadata pull (avatar + display title).
@@ -329,8 +331,16 @@ class SubscriptionManager:
                 )
 
         history = fetch_all or (new_limit is not None and ref.kind == REF_KIND_CHANNEL)
-        listing = getattr(provider, "list_channel_history", provider.list_items) if history else provider.list_items
-        headers = listing(ref, limit=backfill)
+        include_shorts = bool(sub.get("include_shorts", True))
+        if history:
+            listing = getattr(provider, "list_channel_history", provider.list_items)
+            headers = listing(
+                ref, limit=backfill, include_shorts=include_shorts
+            )
+        else:
+            headers = provider.list_items(
+                ref, limit=backfill, include_shorts=include_shorts
+            )
         upstream_ids = [h.item_id for h in headers]
 
         seen = self._load_seen_item_ids(subscription_id)
@@ -473,6 +483,55 @@ class SubscriptionManager:
             "failed": 0,
             "total_new": 1,
         }
+
+    # ---- purge already-imported Shorts ----------------------------
+
+    # One purge is a single yt-dlp extraction of the Shorts tab, and
+    # yt-dlp stops at the tab's actual end — a channel with a few Shorts
+    # pays almost nothing. The ceiling only bounds a channel that really
+    # does have thousands.
+    PURGE_SCAN_LIMIT = 5000
+
+    def purge_shorts(self, subscription_id: int) -> dict:
+        """Move a channel's already-imported Shorts to Trash.
+
+        Which imported items are Shorts is decided by the provider's
+        current Shorts listing: a Short's watch URL and metadata are
+        indistinguishable from a regular upload's, so membership in that
+        listing is the only identification that costs no per-item fetch.
+        An item outside the listing is left alone rather than guessed at.
+        """
+        sub = self._load_subscription(subscription_id)
+        provider = get_subscription_provider(sub["provider"])
+        if provider is None:
+            raise ValueError(f"Provider not registered: {sub['provider']}")
+        if sub["source_kind"] != REF_KIND_CHANNEL:
+            raise ValueError("Only channel subscriptions have a Shorts listing")
+        list_short_ids = getattr(provider, "list_short_ids", None)
+        if list_short_ids is None:
+            raise ValueError(f"{provider.name} cannot identify Shorts")
+
+        ref = SubscriptionRef(kind=sub["source_kind"], ref=sub["source_ref"])
+        rows = subdb.load_video_rows(subscription_id)
+        short_ids = set(list_short_ids(ref, self.PURGE_SCAN_LIMIT))
+
+        matched = [r for r in rows if r["item_id"] in short_ids]
+        trashed = subdb.trash_files(
+            [r["file_id"] for r in matched if r["file_id"]]
+        )
+        if trashed:
+            try:
+                event_hooks.emit_sync(
+                    "files.deleted",
+                    {"file_ids": trashed, "type": "soft_delete"},
+                    drives=[sub["drive"]],
+                )
+            except Exception:  # pragma: no cover — best-effort UI notify
+                logger.exception("Failed to announce purged Shorts")
+        subdb.mark_videos_dismissed(
+            subscription_id, [r["item_id"] for r in matched]
+        )
+        return {"removed": len(trashed), "matched": len(matched)}
 
     # ---- DB helpers (thin delegations to subscription.db) --------
 

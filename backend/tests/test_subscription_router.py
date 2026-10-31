@@ -44,6 +44,7 @@ class _FakeProvider:
     inter_item_delay_seconds: float = 0.0
     headers: list[ItemHeader] = field(default_factory=list)
     history_headers: list[ItemHeader] | None = None
+    short_ids: list[str] = field(default_factory=list)
     items: dict[str, ItemMetadata] = field(default_factory=dict)
     transcripts: dict[str, TranscriptResult] = field(default_factory=dict)
     resolve_url: Callable[[str], SubscriptionRef | None] | None = None
@@ -51,14 +52,17 @@ class _FakeProvider:
     def resolve_ref(self, url):
         return self.resolve_url(url) if self.resolve_url else None
 
-    def list_items(self, ref, limit=None):
+    def list_items(self, ref, limit=None, *, include_shorts=True):
         out = list(self.headers)
         return out if limit is None else out[:limit]
 
-    def list_channel_history(self, ref, limit):
+    def list_channel_history(self, ref, limit, *, include_shorts=True):
         if self.history_headers is None:
             return self.list_items(ref, limit)
         return list(self.history_headers[:limit])
+
+    def list_short_ids(self, ref, limit):
+        return list(self.short_ids)[:limit]
 
     def fetch_item(self, ref, item_id):
         return self.items.get(
@@ -237,6 +241,27 @@ class TestCreateSubscription:
             json={"url": "https://other.example/x", "drive": "d"},
         )
         assert res.status_code == 422
+
+    def test_imports_shorts_by_default(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        assert res.json()["include_shorts"] is True
+
+    def test_include_shorts_can_be_turned_off_at_creation(
+        self, client
+    ) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={
+                "url": f"https://fake/channel/{_UC}",
+                "drive": "d",
+                "include_shorts": False,
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["include_shorts"] is False
 
 
 # ---- list ---------------------------------------------------------
@@ -449,6 +474,89 @@ class TestSyncSubscription:
             "/api/addons/media_import/subscriptions/9999/sync"
         )
         assert res.status_code == 404
+
+
+# ---- remove Shorts ------------------------------------------------
+
+
+class TestRemoveShorts:
+    def test_imported_shorts_go_to_trash_and_regular_videos_stay(
+        self, client, fake_provider: _FakeProvider, drive_path,
+        media_import_db, monkeypatch,
+    ) -> None:
+        import app.config as config
+
+        # Core's fileops.resolve_drive_path checks the name against
+        # drives.json, which the test suite does not have.
+        monkeypatch.setattr(config, "get_drive_names", lambda: ["d"])
+        fake_provider.headers = [
+            ItemHeader(item_id="vid_short", title="S"),
+            ItemHeader(item_id="vid_regular", title="R"),
+        ]
+        fake_provider.items = {
+            "vid_short": ItemMetadata(
+                item_id="vid_short", canonical_url="https://fake/v/s", title="S",
+            ),
+            "vid_regular": ItemMetadata(
+                item_id="vid_regular", canonical_url="https://fake/v/r", title="R",
+            ),
+        }
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+        client.post(f"/api/addons/media_import/subscriptions/{sub_id}/sync")
+        _drain_worker()
+
+        fake_provider.short_ids = ["vid_short"]
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/remove-shorts"
+        )
+        assert res.status_code == 200
+        assert res.json() == {"status": "queued"}
+        _drain_worker()
+
+        db = media_import_db()
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT sv.item_id, sv.status, sv.error_kind, "
+                    " f.deleted_at AS deleted_at "
+                    "FROM subscription_videos sv "
+                    "LEFT JOIN files f ON f.id = sv.file_id "
+                    "WHERE sv.subscription_id = :id"
+                ),
+                {"id": sub_id},
+            ).mappings().all()
+        finally:
+            db.close()
+        by_item = {r["item_id"]: r for r in rows}
+        assert by_item["vid_short"]["status"] == "failed"
+        assert by_item["vid_short"]["error_kind"] == "dismissed"
+        assert by_item["vid_short"]["deleted_at"] is not None
+        assert by_item["vid_regular"]["status"] == "imported"
+        assert by_item["vid_regular"]["deleted_at"] is None
+
+    def test_playlist_subscription_is_rejected(self, client) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": "https://fake/playlist/PLxyz", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.post(
+            f"/api/addons/media_import/subscriptions/{sub_id}/remove-shorts"
+        )
+
+        assert res.status_code == 400
+
+    def test_unknown_id_returns_404(self, client) -> None:
+        res = client.post(
+            "/api/addons/media_import/subscriptions/9999/remove-shorts"
+        )
+        assert res.status_code == 404
+
 
 
 # ---- backfill -----------------------------------------------------
@@ -920,6 +1028,26 @@ class TestPatchSubscription:
             json={"is_enabled": True},
         )
         assert res.json()["is_enabled"] is True
+
+    def test_include_shorts_toggle(self, client) -> None:
+        create = client.post(
+            "/api/addons/media_import/subscriptions",
+            json={"url": f"https://fake/channel/{_UC}", "drive": "d"},
+        )
+        sub_id = create.json()["id"]
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"include_shorts": False},
+        )
+        assert res.status_code == 200
+        assert res.json()["include_shorts"] is False
+
+        res = client.patch(
+            f"/api/addons/media_import/subscriptions/{sub_id}",
+            json={"include_shorts": True},
+        )
+        assert res.json()["include_shorts"] is True
 
     def test_cooldown_change_clears_cooldown_until(
         self, client, media_import_db

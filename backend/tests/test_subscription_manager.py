@@ -52,6 +52,9 @@ class _FakeProvider:
     resolve_url: Callable[[str], SubscriptionRef | None] | None = None
     source_metadata: SourceMetadata | None = None
     source_metadata_calls: list[SubscriptionRef] = field(default_factory=list)
+    include_shorts_calls: list[bool] = field(default_factory=list)
+    short_ids: list[str] = field(default_factory=list)
+    short_ids_scans: list[int] = field(default_factory=list)
 
     def resolve_ref(self, url: str) -> SubscriptionRef | None:
         if self.resolve_url:
@@ -59,10 +62,18 @@ class _FakeProvider:
         return None
 
     def list_items(
-        self, ref: SubscriptionRef, limit: int | None = None
+        self, ref: SubscriptionRef, limit: int | None = None, *,
+        include_shorts: bool = True,
     ) -> list[ItemHeader]:
+        self.include_shorts_calls.append(include_shorts)
         out = list(self.headers)
         return out if limit is None else out[:limit]
+
+    def list_short_ids(
+        self, ref: SubscriptionRef, limit: int
+    ) -> list[str]:
+        self.short_ids_scans.append(limit)
+        return list(self.short_ids)
 
     def fetch_item(
         self, ref: SubscriptionRef, item_id: str
@@ -1500,3 +1511,197 @@ def test_no_import_path_of_a_subscription_asks_for_comments(
 
     assert subdb.count_seen_item_ids(sid) == 2
     assert asked == []
+
+
+# ---- Shorts preference & purge ------------------------------------
+
+
+class TestSkipShortsListing:
+    def test_sync_passes_an_opted_out_subscription_to_the_provider(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.headers = [ItemHeader(item_id="vid_a")]
+        mgr = SubscriptionManager()
+        sid = mgr.create(
+            url="https://fake/channel/UCabcdefghijklmnopqrstuv",
+            drive="d",
+            include_shorts=False,
+        )
+        mgr._sync_blocking(sid)
+
+        assert fake_provider.include_shorts_calls == [False]
+
+    def test_a_new_subscription_still_imports_shorts(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        fake_provider.headers = [ItemHeader(item_id="vid_a")]
+        mgr = SubscriptionManager()
+        sid = mgr.create(
+            url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d"
+        )
+        mgr._sync_blocking(sid)
+
+        assert fake_provider.include_shorts_calls == [True]
+
+
+class TestPurgeShorts:
+    @pytest.fixture(autouse=True)
+    def _drive_exists(self, monkeypatch):
+        # Core's fileops.resolve_drive_path checks the name against
+        # drives.json, which unit tests do not have; drive_path already
+        # maps it to a temp directory.
+        import app.config as config
+
+        monkeypatch.setattr(config, "get_drive_names", lambda: ["d"])
+
+    def _seed(self, mgr, fake_provider: _FakeProvider) -> int:
+        fake_provider.headers = [
+            ItemHeader(item_id="vid_short"),
+            ItemHeader(item_id="vid_regular"),
+        ]
+        fake_provider.items = {
+            "vid_short": ItemMetadata(
+                item_id="vid_short",
+                canonical_url="https://fake/v/vid_short",
+                title="Short",
+            ),
+            "vid_regular": ItemMetadata(
+                item_id="vid_regular",
+                canonical_url="https://fake/v/vid_regular",
+                title="Regular",
+            ),
+        }
+        sid = mgr.create(
+            url="https://fake/channel/UCabcdefghijklmnopqrstuv", drive="d"
+        )
+        mgr._sync_blocking(sid)
+        return sid
+
+    def _video_rows(self, media_import_db, sid: int) -> dict:
+        db = media_import_db()
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT item_id, status, error_kind, file_id "
+                    "FROM subscription_videos WHERE subscription_id = :id"
+                ),
+                {"id": sid},
+            ).mappings().all()
+            files = {
+                r["id"]: r
+                for r in db.execute(
+                    text("SELECT id, filename, deleted_at FROM files")
+                ).mappings()
+            }
+        finally:
+            db.close()
+        return {
+            r["item_id"]: {**dict(r), "file": files.get(r["file_id"])}
+            for r in rows
+        }
+
+    def test_only_shorts_go_to_trash(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sid = self._seed(mgr, fake_provider)
+        fake_provider.short_ids = ["vid_short"]
+
+        result = mgr.purge_shorts(sid)
+
+        assert result == {"removed": 1, "matched": 1}
+        rows = self._video_rows(media_import_db, sid)
+        assert rows["vid_short"]["status"] == "failed"
+        assert rows["vid_short"]["error_kind"] == "dismissed"
+        assert rows["vid_short"]["file"]["deleted_at"] is not None
+        assert rows["vid_regular"]["status"] == "imported"
+        assert rows["vid_regular"]["file"]["deleted_at"] is None
+        # Trash keeps the .loft on disk; only the index hides it.
+        assert (drive_path / "Short.loft").exists()
+
+    def test_a_failed_short_is_dismissed_without_a_file(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sid = self._seed(mgr, fake_provider)
+        db = media_import_db()
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO subscription_videos "
+                    "(subscription_id, item_id, status, file_id, first_seen_at) "
+                    "VALUES (:sid, 'vid_missing_short', 'failed', NULL, "
+                    " '2026-05-01T00:00:00')"
+                ),
+                {"sid": sid},
+            )
+            db.commit()
+        finally:
+            db.close()
+        fake_provider.short_ids = ["vid_short", "vid_missing_short"]
+
+        result = mgr.purge_shorts(sid)
+
+        assert result == {"removed": 1, "matched": 2}
+        rows = self._video_rows(media_import_db, sid)
+        assert rows["vid_missing_short"]["status"] == "failed"
+        assert rows["vid_missing_short"]["error_kind"] == "dismissed"
+
+    def test_a_purged_short_is_not_imported_again(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sid = self._seed(mgr, fake_provider)
+        fake_provider.short_ids = ["vid_short"]
+        mgr.purge_shorts(sid)
+
+        assert mgr._sync_blocking(sid)["total_new"] == 0
+
+    def test_a_playlist_has_no_shorts_listing(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sid = mgr.create(url="https://fake/playlist/PLxyz", drive="d")
+
+        with pytest.raises(ValueError):
+            mgr.purge_shorts(sid)
+
+    def test_a_provider_that_cannot_identify_shorts_is_rejected(
+        self, media_import_db, drive_path, fake_provider: _FakeProvider,
+        monkeypatch,
+    ) -> None:
+        from addons.media_import.subscription.manager import (
+            SubscriptionManager,
+        )
+
+        mgr = SubscriptionManager()
+        sid = self._seed(mgr, fake_provider)
+        monkeypatch.delattr(_FakeProvider, "list_short_ids")
+
+        with pytest.raises(ValueError):
+            mgr.purge_shorts(sid)
+

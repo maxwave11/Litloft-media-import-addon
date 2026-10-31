@@ -74,6 +74,8 @@
       "backfillHintChannel": "Most-recent N uploads.",
       "backfillHintPlaylist": "Items from the start of the playlist.",
       "includeNoTranscript": "Try to fetch transcripts even when none reported",
+      "includeShorts": "Import Shorts",
+      "includeShortsHint": "Uncheck to import only the channel's regular videos. Shorts already imported are removed only from the subscription's details.",
       "sttMode": {
         "label": "Speech-to-text",
         "manual": "Use captions",
@@ -205,7 +207,15 @@
       },
       "options": {
         "heading": "Options",
-        "includeNoTranscript": "Try to fetch transcripts even when none reported"
+        "includeNoTranscript": "Try to fetch transcripts even when none reported",
+        "importShorts": "Import Shorts",
+        "importShortsHint": "Unchecked, only the channel's regular videos are imported. Shorts already imported stay until you remove them.",
+        "removeShorts": "Remove Shorts",
+        "removeShortsConfirm": "Move every Short imported from \"{title}\" to Trash? The subscription keeps them on record, so they are not imported again.",
+        "removeShortsQueued": "Removing Shorts…",
+        "removeShortsBusy": "A sync is already queued for this subscription. Try again when it finishes.",
+        "removedShorts": "Shorts moved to Trash: {count}",
+        "removeShortsFailed": "Failed to remove Shorts"
       },
       "items": {
         "heading": "Items",
